@@ -22,7 +22,7 @@ const INBOUND_FIELDS: FieldDescriptor[] = [
   { name: "messageId", type: "text" },
   { name: "name", type: "text" },
   { name: "email", type: "email" },
-  { name: "phone", type: "text", pattern: "^\\+?[0-9]{7,15}$" },
+  { name: "phone", type: "text", pattern: "^\\+?[0-9 \\-]{7,24}$" },
   { name: "text", type: "longtext", required: true },
   { name: "subject", type: "text" },
   { name: "market", type: "text" },
@@ -50,7 +50,12 @@ export function createJsonChannel(cfg: JsonChannelConfig): ChannelAdapter {
       const from: InboundMessage["from"] = {};
       if (input.name) from.name = input.name;
       if (input.email) from.email = input.email.toLowerCase();
-      if (input.phone) from.phone = input.phone;
+      if (input.phone) {
+        // Mismo formato que WhatsApp (+dígitos) para que el contacto coincida entre canales.
+        const digits = input.phone.replace(/\D/g, "");
+        if (digits.length < 7 || digits.length > 15) throw new InvalidPayloadError("phone:pattern");
+        from.phone = `+${digits}`;
+      }
       const msg: InboundMessage = {
         channel: cfg.name, externalId: input.messageId ?? newId(), from, text: input.text, receivedAt: now(),
       };

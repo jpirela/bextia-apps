@@ -33,7 +33,7 @@ export function readEnv(src: Source): Env {
     apiToken: required(src, "API_TOKEN"),
     port: Number(src.PORT ?? 10000),
     defaultMarket: src.DEFAULT_MARKET?.trim() || "ES",
-    corsOrigins: (src.CORS_ORIGINS ?? "").split(",").map((s) => s.trim()).filter(Boolean),
+    corsOrigins: (src.NODE_ENV === "production" ? required(src, "CORS_ORIGINS") : src.CORS_ORIGINS ?? "").split(",").map((s) => s.trim()).filter(Boolean),
     simulatorEnabled: src.SIMULATOR_ENABLED === "true",
     emailWebhookSecret: src.EMAIL_WEBHOOK_SECRET?.trim() || null,
     formWebhookSecret: src.FORM_WEBHOOK_SECRET?.trim() || null,

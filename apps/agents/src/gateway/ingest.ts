@@ -1,4 +1,4 @@
-import { and, desc, eq } from "drizzle-orm";
+import { and, desc, eq, or, type SQL } from "drizzle-orm";
 import type { Db } from "../db/index.ts";
 import { contact, conversation, message } from "../db/schema.ts";
 import type { Channel, InboundMessage } from "../channels/types.ts";
@@ -14,9 +14,13 @@ export interface IngestResult {
 }
 
 async function findContact(db: Db, from: InboundMessage["from"]): Promise<ContactRow | undefined> {
-  const where = from.phone ? eq(contact.telefono, from.phone) : eq(contact.email, from.email ?? "");
-  const [row] = await db.select().from(contact).where(where).limit(1);
-  return row;
+  const conds: SQL[] = [];
+  if (from.phone) conds.push(eq(contact.telefono, from.phone));
+  if (from.email) conds.push(eq(contact.email, from.email));
+  if (conds.length === 0) return undefined;
+  const rows = await db.select().from(contact).where(or(...conds)).limit(2);
+  // Si coinciden dos filas (una por teléfono, otra por email), se prefiere la del teléfono.
+  return rows.find((r) => from.phone && r.telefono === from.phone) ?? rows[0];
 }
 
 async function upsertContact(db: Db, msg: InboundMessage): Promise<ContactRow> {
@@ -31,7 +35,10 @@ async function upsertContact(db: Db, msg: InboundMessage): Promise<ContactRow> {
     canal_preferido: msg.channel,
   }).onConflictDoNothing().returning();
   // Carrera: otro request lo creó entre el select y el insert.
-  return created ?? (await findContact(db, msg.from))!;
+  if (created) return created;
+  const again = await findContact(db, msg.from);
+  if (!again) throw new Error("ingest: no se pudo crear ni encontrar el contacto");
+  return again;
 }
 
 async function openConversation(db: Db, contactId: string, canal: Channel): Promise<string> {

@@ -6,6 +6,7 @@ services:
     runtime: node
     plan: starter
     region: frankfurt
+    # Migraciones: se aplican a mano antes del primer deploy (docs/deuda-tecnica.md P14)
     buildCommand: yarn install --frozen-lockfile
     startCommand: yarn workspace @bextia/agents start
     healthCheckPath: /api/health

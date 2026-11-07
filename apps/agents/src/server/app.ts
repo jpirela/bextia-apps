@@ -22,6 +22,11 @@ export interface AppDeps {
 
 export function createApp(deps: AppDeps): Hono {
   const app = new Hono();
+  app.onError((err, c) => {
+    // Sin message ni params: los errores de Drizzle/pg llevan PII en la consulta.
+    console.error("unhandled error", err.name, (err as { code?: unknown }).code);
+    return c.json({ error: "internal" }, 500);
+  });
   app.use("*", cors({ origin: deps.corsOrigins }));
 
   app.get("/api/health", (c) => c.json({ ok: true }));

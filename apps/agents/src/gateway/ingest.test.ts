@@ -16,6 +16,13 @@ const msg = (externalId: string, text = "hola"): InboundMessage => ({
 });
 
 describe("ingest", () => {
+  it("reutiliza un contacto existente solo por email cuando el mensaje trae email y teléfono", async () => {
+    const [existing] = await db.insert(contact).values({ email: "ana@x.com" }).returning();
+    const r = await ingest(db, { ...msg("wamid.9"), from: { phone: "+34600000009", email: "ana@x.com" } });
+    expect(r.contact.id).toBe(existing.id);
+    expect(await db.select().from(contact)).toHaveLength(1);
+  });
+
   it("crea contacto, conversación y mensaje", async () => {
     const r = await ingest(db, msg("wamid.1"));
     expect(r.duplicate).toBe(false);

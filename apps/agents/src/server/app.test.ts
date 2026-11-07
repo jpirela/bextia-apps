@@ -25,6 +25,18 @@ function deps(over: Partial<AppDeps> = {}): AppDeps {
   };
 }
 
+describe("onError", () => {
+  it("responde 500 genérico y no registra el mensaje del error", async () => {
+    const spy = vi.spyOn(console, "error").mockImplementation(() => {});
+    const app = createApp(deps({ pipeline: async () => { throw new Error("insert into contact params: ana@x.com"); } }));
+    const res = await app.request("/webhooks/sim", json({ email: "ana@x.com", text: "hola" }));
+    expect(res.status).toBe(500);
+    expect(await res.json()).toEqual({ error: "internal" });
+    expect(JSON.stringify(spy.mock.calls)).not.toContain("ana@x.com");
+    spy.mockRestore();
+  });
+});
+
 const json = (body: unknown, headers: Record<string, string> = {}) => ({
   method: "POST", body: JSON.stringify(body), headers: { "content-type": "application/json", ...headers },
 });

@@ -43,6 +43,14 @@ describe("canal JSON", () => {
     expect(m.externalId).toBe("gen-1");
   });
 
+  it("normaliza el teléfono a formato +dígitos", async () => {
+    const ch = createJsonChannel({ name: "web", send: noSend, now, newId: () => "g" });
+    const [a] = await ch.receive(post({ phone: "52 155-0000 0000", text: "hola" }));
+    const [b] = await ch.receive(post({ phone: "+52 155 0000 0000", text: "hola" }));
+    expect(a.from.phone).toBe("+5215500000000");
+    expect(b.from.phone).toBe("+5215500000000");
+  });
+
   it("el simulador guarda lo enviado en su bandeja", async () => {
     const sim = createSimulatorChannel();
     await sim.adapter.send({ channel: "sim", to: { email: "a@b.com" }, text: "respuesta" });

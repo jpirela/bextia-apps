@@ -4,6 +4,11 @@ import { readEnv } from "./env.ts";
 const base = { DATABASE_URL: "postgres://x", API_TOKEN: "t" };
 
 describe("readEnv", () => {
+  it("en producción exige CORS_ORIGINS", () => {
+    expect(() => readEnv({ ...base, NODE_ENV: "production" })).toThrow("CORS_ORIGINS");
+    expect(readEnv({ ...base, NODE_ENV: "production", CORS_ORIGINS: "https://a.com" }).corsOrigins).toEqual(["https://a.com"]);
+  });
+
   it("exige DATABASE_URL y API_TOKEN", () => {
     expect(() => readEnv({})).toThrow("DATABASE_URL");
     expect(() => readEnv({ DATABASE_URL: "postgres://x" })).toThrow("API_TOKEN");
