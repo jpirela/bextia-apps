@@ -13,12 +13,14 @@ export function createScriptedLlm(script: {
     async classify<T>(req: ClassifyRequest) {
       calls.classify.push(req);
       const next = classifyQueue.shift();
+      // Intencional: si el guion se agota, el test debe fallar ruidosamente.
       if (!next) throw new Error("scripted llm: sin respuestas de classify");
       return next as LlmResult<T>;
     },
     async converse(req) {
       calls.converse.push(req);
       const next = converseQueue.shift();
+      // Intencional: si el guion se agota, el test debe fallar ruidosamente.
       if (!next) throw new Error("scripted llm: sin respuestas de converse");
       return next;
     },

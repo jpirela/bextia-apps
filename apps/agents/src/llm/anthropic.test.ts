@@ -57,6 +57,41 @@ describe("createAnthropicLlm.classify", () => {
   });
 });
 
+describe("createAnthropicLlm robustez", () => {
+  const conv = { system: "s", messages: [{ role: "user" as const, content: "x" }] };
+  it("max_tokens es invalid_output en classify y converse", async () => {
+    const { client } = fakeClient(async () => reply('{"intent":"lead"', "max_tokens"));
+    const llm = createAnthropicLlm(client);
+    expect(await llm.classify(req)).toEqual({ ok: false, reason: "invalid_output", detail: "truncado" });
+    expect(await llm.converse(conv)).toEqual({ ok: false, reason: "invalid_output", detail: "truncado" });
+  });
+  it.each(["null", "[]"])("classify rechaza JSON no objeto (%s)", async (txt) => {
+    const { client } = fakeClient(async () => reply(txt));
+    const r = await createAnthropicLlm(client).classify(req);
+    expect(r.ok === false && r.reason).toBe("invalid_output");
+  });
+  it("errores no-API se convierten en api_error", async () => {
+    const { client } = fakeClient(async () => { throw new TypeError("boom secreto"); });
+    const llm = createAnthropicLlm(client);
+    expect(await llm.classify(req)).toEqual({ ok: false, reason: "api_error", detail: "TypeError" });
+    expect(await llm.converse(conv)).toEqual({ ok: false, reason: "api_error", detail: "TypeError" });
+  });
+  it("contenido vacío es invalid_output", async () => {
+    const empty = async () => ({ ...reply("x"), content: [] }) as unknown as Anthropic.Message;
+    const { client } = fakeClient(empty);
+    const llm = createAnthropicLlm(client);
+    expect((await llm.classify(req)).ok).toBe(false);
+    const r = await llm.converse(conv);
+    expect(r.ok === false && r.reason).toBe("invalid_output");
+  });
+  it("trunca el detalle del refusal a 200 caracteres", async () => {
+    const msg = { ...reply("", "refusal"), stop_details: { type: "refusal", category: null, explanation: "a".repeat(500) } } as unknown as Anthropic.Message;
+    const { client } = fakeClient(async () => msg);
+    const r = await createAnthropicLlm(client).converse(conv);
+    expect(r.ok === false && r.detail.length).toBe(200);
+  });
+});
+
 describe("createAnthropicLlm.converse", () => {
   it("usa Sonnet y devuelve el texto", async () => {
     const { client, create } = fakeClient(async () => reply("¡Hola! ¿A qué destino te gustaría viajar?"));

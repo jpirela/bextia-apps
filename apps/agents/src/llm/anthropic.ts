@@ -10,15 +10,20 @@ function textOf(res: Anthropic.Message): string {
 
 function refusal(res: Anthropic.Message): LlmFailure | null {
   if (res.stop_reason !== "refusal") return null;
-  return { ok: false, reason: "refusal", detail: res.stop_details?.explanation ?? "" };
+  return { ok: false, reason: "refusal", detail: (res.stop_details?.explanation ?? "").slice(0, 200) };
 }
 
-// Reintentos/backoff: los hace el SDK (maxRetries en el cliente). Aquí solo se traduce el error final.
+function truncated(res: Anthropic.Message): LlmFailure | null {
+  if (res.stop_reason !== "max_tokens") return null;
+  return { ok: false, reason: "invalid_output", detail: "truncado" };
+}
+
+// Un fallo del LLM nunca se propaga al canal: todo error se traduce a api_error (sin cuerpos ni claves).
 function apiFailure(err: unknown): LlmFailure {
   if (err instanceof Anthropic.APIError) {
     return { ok: false, reason: "api_error", detail: `${err.status ?? "sin-status"} ${err.name}` };
   }
-  throw err;
+  return { ok: false, reason: "api_error", detail: err instanceof Error ? err.name : "unknown" };
 }
 
 export function createAnthropicLlm(client: MessagesClient): Llm {
@@ -32,11 +37,14 @@ export function createAnthropicLlm(client: MessagesClient): Llm {
           messages: [{ role: "user", content: req.input }],
           output_config: { format: { type: "json_schema", schema: req.jsonSchema } },
         });
-        const refused = refusal(res);
+        const refused = refusal(res) ?? truncated(res);
         if (refused) return refused;
         let parsed: unknown;
         try { parsed = JSON.parse(textOf(res)); } catch {
           return { ok: false, reason: "invalid_output", detail: "JSON no parseable" } as const;
+        }
+        if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+          return { ok: false, reason: "invalid_output", detail: "no es un objeto" } as const;
         }
         const check = validate(req.fields, parsed as Record<string, unknown>);
         if (!check.ok) {
@@ -55,7 +63,7 @@ export function createAnthropicLlm(client: MessagesClient): Llm {
           system: req.system,
           messages: req.messages,
         });
-        const refused = refusal(res);
+        const refused = refusal(res) ?? truncated(res);
         if (refused) return refused;
         const text = textOf(res);
         if (!text) return { ok: false, reason: "invalid_output", detail: "respuesta vacía" };
