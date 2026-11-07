@@ -1,0 +1,8 @@
+node_modules/
+dist/
+.env
+.env.*
+!.env.example
+*.log
+# documentos confidenciales del cliente copiados por louis ingest
+*.pdf

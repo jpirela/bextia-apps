@@ -1,0 +1,11 @@
+{
+  "name": "bextia-root",
+  "private": true,
+  "workspaces": ["api", "apps/*"],
+  "engines": { "node": ">=24" },
+  "scripts": {
+    "test": "yarn workspace @bextia/agents test",
+    "typecheck": "yarn workspace @bextia/agents typecheck",
+    "contract": "node contract/build-contract.mjs"
+  }
+}
