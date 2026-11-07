@@ -48,4 +48,13 @@ describe("canal JSON", () => {
     await sim.adapter.send({ channel: "sim", to: { email: "a@b.com" }, text: "respuesta" });
     expect(sim.outbox).toEqual([{ channel: "sim", to: { email: "a@b.com" }, text: "respuesta" }]);
   });
+
+  it("rechaza secret vacío y exige secret en email y form", () => {
+    expect(() => createJsonChannel({ name: "web", secret: "", send: noSend })).toThrow();
+    expect(() => createJsonChannel({ name: "email", secret: "", send: noSend })).toThrow();
+    // @ts-expect-error email requiere secret
+    expect(() => createJsonChannel({ name: "email", send: noSend })).toThrow();
+    // @ts-expect-error form requiere secret
+    expect(() => createJsonChannel({ name: "form", send: noSend })).toThrow();
+  });
 });

@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { createWhatsAppChannel, verifyWhatsAppSubscription } from "./whatsapp.ts";
-import { hmacSha256Hex, SignatureError } from "./errors.ts";
+import { hmacSha256Hex, InvalidPayloadError, SignatureError } from "./errors.ts";
 
 const SECRET = "app-secret";
 const payload = {
@@ -54,5 +54,30 @@ describe("canal WhatsApp", () => {
     const ok = new URLSearchParams({ "hub.mode": "subscribe", "hub.verify_token": "vt", "hub.challenge": "42" });
     expect(verifyWhatsAppSubscription(ok, "vt")).toBe("42");
     expect(verifyWhatsAppSubscription(ok, "otro")).toBeNull();
+  });
+
+  it("exige appSecret no vacío", () => {
+    expect(() => createWhatsAppChannel({ ...cfg, appSecret: "" })).toThrow();
+  });
+
+  it("firma válida pero JSON inválido lanza InvalidPayloadError", async () => {
+    const body = "no-json";
+    await expect(createWhatsAppChannel(cfg).receive(signedRequest(body, `sha256=${hmacSha256Hex(SECRET, body)}`)))
+      .rejects.toBeInstanceOf(InvalidPayloadError);
+  });
+
+  it("ignora cambios sin value", async () => {
+    const body = JSON.stringify({ entry: [{ changes: [{}] }] });
+    const msgs = await createWhatsAppChannel(cfg).receive(signedRequest(body, `sha256=${hmacSha256Hex(SECRET, body)}`));
+    expect(msgs).toEqual([]);
+  });
+
+  it("incluye el cuerpo de la respuesta y usa timeout en el envío", async () => {
+    const fetchMock = vi.fn(async () => new Response("token expirado", { status: 401 }));
+    const ch = createWhatsAppChannel({ ...cfg, fetch: fetchMock as unknown as typeof fetch });
+    await expect(ch.send({ channel: "whatsapp", to: { phone: "+34600000001" }, text: "x" }))
+      .rejects.toThrow(/401 token expirado/);
+    const [, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
+    expect(init.signal).toBeInstanceOf(AbortSignal);
   });
 });

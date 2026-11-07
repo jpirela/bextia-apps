@@ -3,13 +3,16 @@ import { validate, type FieldDescriptor } from "@jorgepirelarivas/clark";
 import type { Channel, ChannelAdapter, InboundMessage, OutboundMessage } from "./types.ts";
 import { InvalidPayloadError, safeEqual, SignatureError } from "./errors.ts";
 
-export interface JsonChannelConfig {
-  name: Exclude<Channel, "whatsapp">;
-  secret?: string; // si se define, se exige en la cabecera x-webhook-secret
+interface JsonChannelBase {
   send: (msg: OutboundMessage) => Promise<{ externalId: string }>;
   newId?: () => string;
   now?: () => Date;
 }
+
+// email y form exigen secreto compartido; web y sim lo tienen opcional.
+export type JsonChannelConfig =
+  | (JsonChannelBase & { name: "email" | "form"; secret: string })
+  | (JsonChannelBase & { name: "web" | "sim"; secret?: string });
 
 interface JsonInbound {
   messageId?: string; name?: string; email?: string; phone?: string; text: string; subject?: string; market?: string;
@@ -26,6 +29,10 @@ const INBOUND_FIELDS: FieldDescriptor[] = [
 ] as FieldDescriptor[];
 
 export function createJsonChannel(cfg: JsonChannelConfig): ChannelAdapter {
+  if (cfg.secret === "") throw new Error(`canal ${cfg.name}: secret no puede ser vacío`);
+  if ((cfg.name === "email" || cfg.name === "form") && cfg.secret === undefined) {
+    throw new Error(`canal ${cfg.name}: se requiere secret`);
+  }
   const newId = cfg.newId ?? randomUUID;
   const now = cfg.now ?? (() => new Date());
   return {
