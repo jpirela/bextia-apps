@@ -38,4 +38,17 @@ describe("ingest", () => {
     expect(b.conversationId).toBe(a.conversationId);
     expect(await db.select().from(contact)).toHaveLength(1);
   });
+
+  it("rechaza un mensaje sin teléfono ni email", async () => {
+    await expect(ingest(db, { ...msg("wamid.9"), from: { name: "Anónimo" } }))
+      .rejects.toThrow("Mensaje sin identificador de contacto");
+    await expect(ingest(db, { ...msg("wamid.10"), from: { phone: "", email: "" } }))
+      .rejects.toThrow("Mensaje sin identificador de contacto");
+  });
+
+  it("guarda null, nunca cadena vacía, en el campo que falta", async () => {
+    const r = await ingest(db, { ...msg("wamid.11"), from: { phone: "+34600000005", email: "" } });
+    expect(r.contact.telefono).toBe("+34600000005");
+    expect(r.contact.email).toBeNull();
+  });
 });

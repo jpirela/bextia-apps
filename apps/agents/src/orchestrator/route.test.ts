@@ -45,6 +45,20 @@ describe("route", () => {
     expect(d.bookingId).toBe(b.id);
   });
 
+  it("con dos viajes activos elige el de inicio más reciente de forma determinista", async () => {
+    const c = await newContact("+34600000004");
+    await db.insert(booking).values({
+      codigo: "BX-3", viajero_nombre: "Ivo", viajero_telefono: "+34600000004", destino: "Lisboa",
+      inicio: new Date("2026-11-05T00:00:00Z"), fin: new Date("2026-11-15T00:00:00Z"),
+    });
+    const [recent] = await db.insert(booking).values({
+      codigo: "BX-4", viajero_nombre: "Ivo", viajero_telefono: "+34600000004", destino: "Oporto",
+      inicio: new Date("2026-11-07T00:00:00Z"), fin: new Date("2026-11-15T00:00:00Z"),
+    }).returning();
+    const d = await route(db, { contact: c, at: mondayNight, defaultMarket: "ES" });
+    expect(d.bookingId).toBe(recent.id);
+  });
+
   it("una reserva ya terminada no cuenta como viaje activo", async () => {
     const c = await newContact("+34600000003");
     await db.insert(booking).values({

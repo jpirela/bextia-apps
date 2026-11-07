@@ -19,12 +19,13 @@ async function findContact(db: Db, from: InboundMessage["from"]): Promise<Contac
 }
 
 async function upsertContact(db: Db, msg: InboundMessage): Promise<ContactRow> {
+  if (!msg.from.phone && !msg.from.email) throw new Error("Mensaje sin identificador de contacto");
   const found = await findContact(db, msg.from);
   if (found) return found;
   const [created] = await db.insert(contact).values({
     nombre: msg.from.name ?? null,
-    telefono: msg.from.phone ?? null,
-    email: msg.from.email ?? null,
+    telefono: msg.from.phone || null,
+    email: msg.from.email || null,
     mercado: msg.market ?? null,
     canal_preferido: msg.channel,
   }).onConflictDoNothing().returning();

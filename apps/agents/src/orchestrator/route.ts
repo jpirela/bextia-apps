@@ -1,4 +1,4 @@
-import { and, eq, gte, lte, or, type SQL } from "drizzle-orm";
+import { and, desc, eq, gte, lte, or, type SQL } from "drizzle-orm";
 import type { Db } from "../db/index.ts";
 import { booking, business_hours, type AgentName } from "../db/schema.ts";
 import type { ContactRow } from "../gateway/ingest.ts";
@@ -17,7 +17,8 @@ async function findActiveBookingId(db: Db, c: ContactRow, at: Date): Promise<str
   if (c.email) ids.push(eq(booking.viajero_email, c.email));
   if (c.id) ids.push(eq(booking.contact_id, c.id));
   const [row] = await db.select({ id: booking.id }).from(booking)
-    .where(and(or(...ids), lte(booking.inicio, at), gte(booking.fin, at))).limit(1);
+    .where(and(or(...ids), lte(booking.inicio, at), gte(booking.fin, at)))
+    .orderBy(desc(booking.inicio)).limit(1);
   return row?.id ?? null;
 }
 
