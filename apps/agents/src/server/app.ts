@@ -43,7 +43,10 @@ export function createApp(deps: AppDeps): Hono {
   });
 
   app.use("/webhooks/*", async (c, next) => {
-    const ip = c.req.header("x-forwarded-for")?.split(",")[0]?.trim() || "local";
+    // Render agrega la IP real del cliente al final de x-forwarded-for; los saltos anteriores los controla el cliente.
+    const hops = (c.req.header("x-forwarded-for") ?? "").split(",").map((s) => s.trim()).filter(Boolean);
+    const conn = (c.env as { incoming?: { socket?: { remoteAddress?: string } } } | undefined)?.incoming?.socket?.remoteAddress;
+    const ip = hops.at(-1) ?? conn ?? "unknown";
     if (!deps.ipLimiter.hit(ip)) return c.json({ error: "rate_limited" }, 429);
     await next();
   });
@@ -56,17 +59,26 @@ export function createApp(deps: AppDeps): Hono {
   app.post("/webhooks/:channel", async (c) => {
     const adapter = deps.channels[c.req.param("channel") as Channel];
     if (!adapter) return c.json({ error: "unknown_channel" }, 404);
-    const outcomes: InboundOutcome[] = [];
+    let messages: InboundMessage[];
     try {
-      const messages = await adapter.receive(c.req.raw);
-      for (const m of messages) outcomes.push(await deps.pipeline(m));
+      messages = await adapter.receive(c.req.raw);
     } catch (err) {
       if (err instanceof SignatureError) return c.json({ error: "invalid_signature" }, 401);
       if (err instanceof InvalidPayloadError) return c.json({ error: "invalid_payload", detail: err.message }, 400);
       if (err instanceof SyntaxError) return c.json({ error: "invalid_json" }, 400);
       throw err;
     }
-    return c.json({ received: outcomes.length, outcomes: outcomes.map((o) => o.status) });
+    // Un mensaje inválido de un lote no debe impedir procesar el resto (ni provocar reintentos del proveedor).
+    const outcomes: InboundOutcome[] = [];
+    for (const m of messages) {
+      try {
+        outcomes.push(await deps.pipeline(m));
+      } catch (err) {
+        if (!(err instanceof InvalidPayloadError)) throw err;
+        console.warn(`webhook ${m.channel}: mensaje descartado por payload inválido`);
+      }
+    }
+    return c.json({ received: messages.length, outcomes: outcomes.map((o) => o.status) });
   });
 
   if (deps.simulator) {

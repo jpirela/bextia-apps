@@ -2,6 +2,7 @@ import { and, desc, eq } from "drizzle-orm";
 import type { Db } from "../db/index.ts";
 import { contact, conversation, message } from "../db/schema.ts";
 import type { Channel, InboundMessage } from "../channels/types.ts";
+import { MissingContactError } from "../channels/errors.ts";
 
 export type ContactRow = typeof contact.$inferSelect;
 
@@ -19,7 +20,7 @@ async function findContact(db: Db, from: InboundMessage["from"]): Promise<Contac
 }
 
 async function upsertContact(db: Db, msg: InboundMessage): Promise<ContactRow> {
-  if (!msg.from.phone && !msg.from.email) throw new Error("Mensaje sin identificador de contacto");
+  if (!msg.from.phone && !msg.from.email) throw new MissingContactError();
   const found = await findContact(db, msg.from);
   if (found) return found;
   const [created] = await db.insert(contact).values({

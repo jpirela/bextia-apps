@@ -1,7 +1,6 @@
 import type { Db } from "../db/index.ts";
 import { kpi_event } from "../db/schema.ts";
 import type { InboundMessage } from "../channels/types.ts";
-import { InvalidPayloadError } from "../channels/errors.ts";
 import { ingest, type IngestResult } from "../gateway/ingest.ts";
 import { route, type RouteDecision } from "../orchestrator/route.ts";
 import type { RateLimiter } from "./rate-limit.ts";
@@ -21,18 +20,9 @@ export interface InboundOutcome {
   decision?: RouteDecision;
 }
 
-const SIN_CONTACTO = "Mensaje sin identificador de contacto";
-
 export function createPipeline(deps: PipelineDeps): (msg: InboundMessage) => Promise<InboundOutcome> {
   return async (msg) => {
-    let ing: IngestResult;
-    try {
-      ing = await ingest(deps.db, msg);
-    } catch (err) {
-      // Sin teléfono ni email no hay a quién asociar el mensaje: es un error del remitente (400), no del servidor.
-      if (err instanceof Error && err.message === SIN_CONTACTO) throw new InvalidPayloadError(SIN_CONTACTO);
-      throw err;
-    }
+    const ing = await ingest(deps.db, msg);
     if (ing.duplicate) return { status: "duplicate", conversationId: ing.conversationId };
     if (!deps.contactLimiter.hit(ing.contact.id)) return { status: "rate_limited", conversationId: ing.conversationId };
     const decision = await route(deps.db, { contact: ing.contact, at: msg.receivedAt, defaultMarket: deps.defaultMarket });

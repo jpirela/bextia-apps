@@ -3,7 +3,7 @@ import { createTestDb } from "../db/test-db.ts";
 import { kpi_event } from "../db/schema.ts";
 import type { Db } from "../db/index.ts";
 import type { InboundMessage } from "../channels/types.ts";
-import { InvalidPayloadError } from "../channels/errors.ts";
+import { MissingContactError } from "../channels/errors.ts";
 import { createRateLimiter } from "./rate-limit.ts";
 import { createPipeline } from "./pipeline.ts";
 
@@ -41,6 +41,6 @@ describe("pipeline", () => {
   it("un mensaje sin teléfono ni email se rechaza como payload inválido (400), no como error interno", async () => {
     const run = createPipeline({ db, defaultMarket: "ES", contactLimiter: createRateLimiter({ limit: 10, windowMs: 60_000 }) });
     const sinContacto: InboundMessage = { ...msg("m-x"), from: {} };
-    await expect(run(sinContacto)).rejects.toBeInstanceOf(InvalidPayloadError);
+    await expect(run(sinContacto)).rejects.toBeInstanceOf(MissingContactError);
   });
 });

@@ -3,7 +3,8 @@ import { createApp, type AppDeps } from "./app.ts";
 import { createRateLimiter } from "./rate-limit.ts";
 import { createJsonChannel, createSimulatorChannel } from "../channels/json-channel.ts";
 import { createWhatsAppChannel } from "../channels/whatsapp.ts";
-import { hmacSha256Hex, InvalidPayloadError } from "../channels/errors.ts";
+import { hmacSha256Hex, MissingContactError } from "../channels/errors.ts";
+import type { ChannelAdapter, InboundMessage } from "../channels/types.ts";
 
 function deps(over: Partial<AppDeps> = {}): AppDeps {
   const sim = createSimulatorChannel();
@@ -59,10 +60,31 @@ describe("createApp", () => {
     expect((await app.request("/webhooks/telegram", json({}))).status).toBe(404);
   });
 
-  it("un payload rechazado por el pipeline responde 400, no 500", async () => {
-    const pipeline = vi.fn(async () => { throw new InvalidPayloadError("Mensaje sin identificador de contacto"); });
+  it("en un lote, un mensaje inválido para el pipeline no impide procesar el siguiente", async () => {
+    const pipeline = vi.fn(async (m: InboundMessage) => {
+      if (m.externalId === "bad") throw new MissingContactError();
+      return { status: "routed" as const, conversationId: "c1" };
+    });
+    const mk = (externalId: string): InboundMessage => ({ channel: "sim", externalId, from: {}, text: "x", receivedAt: new Date() });
+    const adapter = { ...deps().channels.sim!, receive: async () => [mk("bad"), mk("good")] } as ChannelAdapter;
+    const res = await createApp(deps({ pipeline, channels: { sim: adapter } })).request("/webhooks/sim", json({}));
+    expect(res.status).toBe(200);
+    expect(pipeline).toHaveBeenCalledTimes(2);
+    expect(await res.json()).toEqual({ received: 2, outcomes: ["routed"] });
+  });
+
+  it("un SyntaxError dentro del pipeline no se disfraza de invalid_json (400)", async () => {
+    const pipeline = vi.fn(async () => { throw new SyntaxError("boom"); });
     const res = await createApp(deps({ pipeline })).request("/webhooks/sim", json({ email: "a@b.com", text: "hola" }));
-    expect(res.status).toBe(400);
+    expect(res.status).toBe(500);
+  });
+
+  it("el límite por IP usa el último salto de x-forwarded-for", async () => {
+    const app = createApp(deps({ ipLimiter: createRateLimiter({ limit: 1, windowMs: 60_000 }) }));
+    const b = { email: "a@b.com", text: "1" };
+    expect((await app.request("/webhooks/sim", json(b, { "x-forwarded-for": "9.9.9.1, 5.5.5.5" }))).status).toBe(200);
+    // Mismo cliente real, primer salto falsificado distinto: sigue limitado.
+    expect((await app.request("/webhooks/sim", json(b, { "x-forwarded-for": "9.9.9.2, 5.5.5.5" }))).status).toBe(429);
   });
 
   it("WhatsApp firmado correctamente llega al pipeline", async () => {
