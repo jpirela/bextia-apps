@@ -1,0 +1,51 @@
+# Mantenido a mano: jor-cli deploy asume rootDir api (ver docs/deuda-tecnica.md).
+# Static site del backoffice y cron de SLA/resumen se agregan en los subproyectos 2–4.
+services:
+  - type: web
+    name: bextia-agentes-api
+    runtime: node
+    plan: starter
+    region: frankfurt
+    buildCommand: yarn install --frozen-lockfile
+    startCommand: yarn workspace @bextia/agents start
+    healthCheckPath: /api/health
+    autoDeploy: false
+    envVars:
+      - key: NODE_VERSION
+        value: "24"
+      - key: NODE_ENV
+        value: production
+      - key: DATABASE_URL
+        sync: false
+      - key: API_TOKEN
+        generateValue: true
+      - key: ANTHROPIC_API_KEY
+        sync: false
+      - key: DEFAULT_MARKET
+        value: ES
+      - key: CORS_ORIGINS
+        sync: false
+      - key: SIMULATOR_ENABLED
+        value: "false"
+      - key: EMAIL_WEBHOOK_SECRET
+        generateValue: true
+      - key: FORM_WEBHOOK_SECRET
+        generateValue: true
+      - key: WHATSAPP_APP_SECRET
+        sync: false
+      - key: WHATSAPP_ACCESS_TOKEN
+        sync: false
+      - key: WHATSAPP_PHONE_NUMBER_ID
+        sync: false
+      - key: WHATSAPP_VERIFY_TOKEN
+        generateValue: true
+      - key: SMTP_HOST
+        sync: false
+      - key: SMTP_PORT
+        value: "465"
+      - key: SMTP_USER
+        sync: false
+      - key: SMTP_PASS
+        sync: false
+      - key: SMTP_FROM
+        sync: false
