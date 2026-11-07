@@ -1,0 +1,36 @@
+{
+  "name": "@bextia/agents",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "start": "node --import tsx src/main.ts",
+    "dev": "tsx watch --env-file-if-exists=../../.env src/main.ts",
+    "test": "vitest run",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "db:generate": "drizzle-kit generate",
+    "db:migrate": "drizzle-kit migrate"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^1.6.0",
+    "@hono/node-server": "^2.1.6",
+    "@jorgepirelarivas/clark": "^0.1.1",
+    "drizzle-orm": "^0.45.4",
+    "hono": "^4.13.17",
+    "nodemailer": "^10.3.1",
+    "postgres": "^4.1.0",
+    "tsx": "^4.23.15"
+  },
+  "devDependencies": {
+    "@electric-sql/pglite": "^0.5.15",
+    "@types/node": "^24",
+    "@types/nodemailer": "^8.0.2",
+    "drizzle-kit": "^0.31.11",
+    "typescript": "^7.0.2",
+    "vite": "^8.3.6",
+    "vitest": "^5.1.0"
+  }
+}
