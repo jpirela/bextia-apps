@@ -1,6 +1,6 @@
 import nodemailer from "nodemailer";
 import { describe, expect, it, vi } from "vitest";
-import { createMailer } from "./mailer.ts";
+import { createMailer, isTransientSmtpError } from "./mailer.ts";
 
 describe("createMailer", () => {
   it("envía con el remitente configurado", async () => {
@@ -26,5 +26,20 @@ describe("createMailer", () => {
     const mailer = createMailer({ sendMail } as never, { from: "a@b.test", attempts: 2, sleep: async () => {} });
     await expect(mailer.send({ to: "x@y.test", subject: "s", text: "t" })).rejects.toThrow("auth failed");
     expect(sendMail).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe("reintentos solo para errores transitorios (P11)", () => {
+  it.each([
+    [{ responseCode: 421 }, true], [{ responseCode: 451 }, true], [{ code: "ECONNECTION" }, true], [{ code: "ETIMEDOUT" }, true],
+    [{ responseCode: 535 }, false], [{ responseCode: 550 }, false], [{ code: "EAUTH" }, false], [{ code: "EENVELOPE" }, false],
+  ])("%j → transitorio=%s", (err, expected) => {
+    expect(isTransientSmtpError(Object.assign(new Error("x"), err))).toBe(expected);
+  });
+  it("no reintenta un 535", async () => {
+    const sendMail = vi.fn(async () => { throw Object.assign(new Error("auth"), { responseCode: 535 }); });
+    const m = createMailer({ sendMail } as never, { from: "a@b.co", sleep: async () => {} });
+    await expect(m.send({ to: "x@y.co", subject: "s", text: "t" })).rejects.toThrow("auth");
+    expect(sendMail).toHaveBeenCalledTimes(1);
   });
 });

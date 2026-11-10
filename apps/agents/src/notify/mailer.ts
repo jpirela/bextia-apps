@@ -11,6 +11,20 @@ export function createSmtpTransport(cfg: SmtpConfig): Transporter {
   });
 }
 
+const TRANSIENT_CODES = new Set(["ECONNECTION", "ETIMEDOUT", "ESOCKET", "EDNS", "ECONNRESET", "EPROTOCOL"]);
+const PERMANENT_CODES = new Set(["EAUTH", "EENVELOPE", "EMESSAGE", "ENOAUTH"]);
+
+// Nodemailer: responseCode = código SMTP; code = error de transporte.
+export function isTransientSmtpError(err: unknown): boolean {
+  const e = err as { responseCode?: unknown; code?: unknown };
+  if (typeof e?.responseCode === "number") return e.responseCode >= 400 && e.responseCode < 500;
+  if (typeof e?.code === "string") {
+    if (PERMANENT_CODES.has(e.code)) return false;
+    if (TRANSIENT_CODES.has(e.code)) return true;
+  }
+  return true; // desconocido: se asume red/transitorio
+}
+
 const defaultSleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
 export function createMailer(
@@ -28,6 +42,7 @@ export function createMailer(
           return { messageId: String(info.messageId) };
         } catch (err) {
           lastError = err;
+          if (!isTransientSmtpError(err)) throw err;
           if (i < attempts - 1) await sleep(500 * 2 ** i);
         }
       }
