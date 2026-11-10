@@ -113,13 +113,21 @@ async function promoteStale(deps: DeliveryDeps, now: Date): Promise<void> {
   const candidates = await deps.db.select().from(lead)
     .where(and(eq(lead.fuera_de_horario, true), inArray(lead.estado, [...STALE_STATES])));
   for (const l of candidates) {
+    try { await promoteOne(deps, l, now, staleMs); } catch (err) {
+      console.error("leads: promoción de lead inactivo fallida", (err as Error).name);
+    }
+  }
+}
+
+async function promoteOne(deps: DeliveryDeps, l: LeadRow, now: Date, staleMs: number): Promise<void> {
+  {
     let last = l.created_at;
     if (l.conversation_id) {
       const [m] = await deps.db.select({ at: max(message.created_at) }).from(message)
         .where(eq(message.conversation_id, l.conversation_id));
       if (m?.at) last = m.at;
     }
-    if (now.getTime() - last.getTime() < staleMs) continue;
+    if (now.getTime() - last.getTime() < staleMs) return;
     const facts: QualFacts = {
       destino: l.destino, fecha_inicio: l.fecha_inicio, fecha_fin: l.fecha_fin, viajeros: l.viajeros,
       interes: l.interes, urgencia: l.urgencia, tipo: l.tipo, idioma: l.idioma as QualFacts["idioma"],
@@ -129,7 +137,7 @@ async function promoteStale(deps: DeliveryDeps, now: Date): Promise<void> {
     if (!agent) {
       await deps.db.update(lead).set({ requiere_humano: true })
         .where(and(eq(lead.id, l.id), eq(lead.estado, l.estado)));
-      continue;
+      return;
     }
     await deps.db.update(lead).set({
       estado: "asignado", sales_agent_id: agent.id, resumen_ia: l.resumen_ia ?? plainSummary(facts), requiere_humano: true,
