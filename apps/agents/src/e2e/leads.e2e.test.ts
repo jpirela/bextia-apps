@@ -34,7 +34,8 @@ describe("E2E: lead fuera de horario completo", () => {
         { ok: true, value: "Perfecto. Un comercial te escribirá mañana a primera hora." },
       ],
     });
-    const agent = createLeadsAgent({ db, llm, kb: createStaticKb([]), send: sim.adapter.send, notifyNow: async () => {} });
+    const agent = createLeadsAgent({ db, llm, kb: createStaticKb([]), send: sim.adapter.send, notifyNow: async () => {},
+      now: () => new Date("2026-11-09T22:00:00Z") }); // reloj fijo: la noche anterior a la entrega
     const app = createApp({
       apiToken: "tok", corsOrigins: [], routes: {}, channels: { sim: sim.adapter },
       pipeline: createPipeline({ db, defaultMarket: "ES", contactLimiter: createRateLimiter({ limit: 50, windowMs: 60_000 }), dispatch: agent }),
