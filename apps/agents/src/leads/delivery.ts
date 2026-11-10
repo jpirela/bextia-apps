@@ -1,6 +1,8 @@
-import { and, eq, inArray, isNotNull } from "drizzle-orm";
+import { and, eq, inArray, isNotNull, max } from "drizzle-orm";
 import type { Db } from "../db/index.ts";
-import { contact, kpi_event, lead, sales_agent } from "../db/schema.ts";
+import { contact, kpi_event, lead, message, sales_agent } from "../db/schema.ts";
+import { assignSalesAgent } from "./assign.ts";
+import { plainSummary, type QualFacts } from "./qualify.ts";
 import { hmacSha256Hex } from "../channels/errors.ts";
 import type { Mailer } from "../notify/mailer.ts";
 import type { LeadRow } from "./store.ts";
@@ -12,16 +14,20 @@ export interface DeliveryDeps {
   backofficeUrl?: string | null;
   now?: () => Date;
   startHour?: number;
+  endHour?: number;
+  /** Inactividad (ms) tras la cual un lead fuera de horario incompleto se promueve a un comercial. Por defecto 2 h. */
+  staleAfterMs?: number;
 }
 
 const DEFAULT_TZ = "Europe/Madrid";
 const WORKDAYS = new Set(["Mon", "Tue", "Wed", "Thu", "Fri"]);
 
-export function workdayStarted(timeZone: string | null, now: Date, startHour = 8): boolean {
+// Jornada = lunes a viernes, [startHour, endHour) en la zona del comercial.
+export function workdayStarted(timeZone: string | null, now: Date, startHour = 8, endHour = 19): boolean {
   const parts = new Intl.DateTimeFormat("en-US", { timeZone: timeZone || DEFAULT_TZ, weekday: "short", hour: "2-digit", hourCycle: "h23" }).formatToParts(now);
   const weekday = parts.find((p) => p.type === "weekday")?.value ?? "";
   const hour = Number(parts.find((p) => p.type === "hour")?.value ?? "0");
-  return WORKDAYS.has(weekday) && hour >= startHour;
+  return WORKDAYS.has(weekday) && hour >= startHour && hour < endHour;
 }
 
 type Row = { lead: LeadRow; agent: typeof sales_agent.$inferSelect; contact: typeof contact.$inferSelect };
@@ -95,12 +101,49 @@ export async function deliverLead(deps: DeliveryDeps, leadId: string): Promise<b
   return true;
 }
 
+const STALE_STATES = ["nuevo", "respondido", "cualificando"] as const;
+const DEFAULT_STALE_MS = 2 * 60 * 60 * 1000;
+
+// Promueve leads fuera de horario que no completaron la cualificación (cliente inactivo o LLM caído)
+// para que lleguen al comercial marcados "revisar". Escribe `asignado` directo con db.update (salta
+// saveLead y su máquina de estados nuevo/respondido/cualificando -> cualificado -> asignado): es
+// aceptable aquí porque el UPDATE lleva guarda optimista sobre el estado leído.
+async function promoteStale(deps: DeliveryDeps, now: Date): Promise<void> {
+  const staleMs = deps.staleAfterMs ?? DEFAULT_STALE_MS;
+  const candidates = await deps.db.select().from(lead)
+    .where(and(eq(lead.fuera_de_horario, true), inArray(lead.estado, [...STALE_STATES])));
+  for (const l of candidates) {
+    let last = l.created_at;
+    if (l.conversation_id) {
+      const [m] = await deps.db.select({ at: max(message.created_at) }).from(message)
+        .where(eq(message.conversation_id, l.conversation_id));
+      if (m?.at) last = m.at;
+    }
+    if (now.getTime() - last.getTime() < staleMs) continue;
+    const facts: QualFacts = {
+      destino: l.destino, fecha_inicio: l.fecha_inicio, fecha_fin: l.fecha_fin, viajeros: l.viajeros,
+      interes: l.interes, urgencia: l.urgencia, tipo: l.tipo, idioma: l.idioma as QualFacts["idioma"],
+      nombre: null, email: null, telefono: null,
+    };
+    const agent = await assignSalesAgent(deps.db, { destino: l.destino, idioma: l.idioma, mercado: l.mercado, tipo: l.tipo });
+    if (!agent) {
+      await deps.db.update(lead).set({ requiere_humano: true })
+        .where(and(eq(lead.id, l.id), eq(lead.estado, l.estado)));
+      continue;
+    }
+    await deps.db.update(lead).set({
+      estado: "asignado", sales_agent_id: agent.id, resumen_ia: l.resumen_ia ?? plainSummary(facts), requiere_humano: true,
+    }).where(and(eq(lead.id, l.id), eq(lead.estado, l.estado)));
+  }
+}
+
 export async function deliverDue(deps: DeliveryDeps): Promise<{ delivered: number; failed: number }> {
   if (!deps.mailer) return { delivered: 0, failed: 0 };
   const now = (deps.now ?? (() => new Date()))();
+  await promoteStale(deps, now);
   const byAgent = new Map<string, Row[]>();
   for (const r of await loadAssigned(deps.db)) {
-    if (!workdayStarted(r.agent.zona_horaria, now, deps.startHour)) continue;
+    if (!workdayStarted(r.agent.zona_horaria, now, deps.startHour, deps.endHour)) continue;
     byAgent.set(r.agent.id, [...(byAgent.get(r.agent.id) ?? []), r]);
   }
   let delivered = 0;

@@ -40,11 +40,17 @@ function tripPatch(f: QualFacts) {
   };
 }
 
-async function history(db: Db, conversationId: string): Promise<Turn[]> {
-  const rows = await db.select({ direccion: message.direccion, contenido: message.contenido }).from(message)
-    .where(eq(message.conversation_id, conversationId)).orderBy(desc(message.created_at)).limit(HISTORY_LIMIT);
-  return rows.reverse() as Turn[];
+async function history(db: Db, conversationId: string): Promise<{ turns: Turn[]; inbound: string[] }> {
+  const rows = await db.select({ direccion: message.direccion, contenido: message.contenido, canal: message.canal, external_id: message.external_id })
+    .from(message).where(eq(message.conversation_id, conversationId)).orderBy(desc(message.created_at)).limit(HISTORY_LIMIT);
+  rows.reverse();
+  return {
+    turns: rows.map((r) => ({ direccion: r.direccion, contenido: r.contenido })),
+    inbound: rows.filter((r) => r.direccion === "in").map((r) => `${r.canal}:${r.external_id}`),
+  };
 }
+
+const ANSWERED_CAP = 5_000;
 
 async function kpi(db: Db, tipo: string, msg: InboundMessage, refId: string, valor?: number) {
   await db.insert(kpi_event).values({ tipo, agente: "leads", canal: msg.channel, ref_id: refId, valor: valor ?? null });
@@ -54,6 +60,14 @@ export function createLeadsAgent(deps: LeadsAgentDeps): Dispatch {
   const { db, llm, kb } = deps;
   const now = deps.now ?? (() => new Date());
   const rules = deps.scoring ?? DEFAULT_SCORING;
+  // Mensajes entrantes que ya respondió un turno anterior (el pipeline serializa por conversación,
+  // así que un mensaje encolado puede haber entrado en el historial del turno previo). Solo en memoria:
+  // vale con instancia única (P17).
+  const answered = new Set<string>();
+  const markAnswered = (keys: string[]) => {
+    for (const k of keys) answered.add(k);
+    for (const k of answered) { if (answered.size <= ANSWERED_CAP) break; answered.delete(k); }
+  };
 
   async function reply(msg: InboundMessage, c: ContactRow, conversationId: string, leadId: string, text: string): Promise<boolean> {
     const to: OutboundMessage["to"] = {};
@@ -101,7 +115,8 @@ export function createLeadsAgent(deps: LeadsAgentDeps): Dispatch {
       return;
     }
 
-    const turns = await history(db, ingest.conversationId);
+    const { turns, inbound } = await history(db, ingest.conversationId);
+    if (answered.has(`${msg.channel}:${msg.externalId}`)) return; // ya contestado junto con el anterior
     const extracted = await extractQualification(llm, turns, now().toISOString().slice(0, 10));
     const q: Qualification | null = extracted.ok ? extracted.value : null;
     let requiereHumano = l.requiere_humano || !extracted.ok;
@@ -146,7 +161,8 @@ export function createLeadsAgent(deps: LeadsAgentDeps): Dispatch {
       await kpi(db, "fallback_llm", msg, l.id);
     }
     const sent = await reply(msg, c, ingest.conversationId, l.id, text);
-    if (!sent) requiereHumano = true;
+    if (sent) markAnswered(inbound);
+    else requiereHumano = true;
 
     if (sent && l.estado === "nuevo") l = await saveLead(db, l, { estado: "respondido" });
     else if (l.estado === "respondido") l = await saveLead(db, l, { estado: "cualificando" });

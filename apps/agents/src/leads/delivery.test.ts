@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { eq } from "drizzle-orm";
 import { createTestDb } from "../db/test-db.ts";
 import type { Db } from "../db/index.ts";
-import { contact, kpi_event, lead, sales_agent } from "../db/schema.ts";
+import { contact, conversation, kpi_event, lead, message, sales_agent } from "../db/schema.ts";
 import type { Mail, Mailer } from "../notify/mailer.ts";
 import { hmacSha256Hex } from "../channels/errors.ts";
 import { deliverDue, deliverLead, workdayStarted } from "./delivery.ts";
@@ -38,6 +38,11 @@ describe("workdayStarted", () => {
     expect(workdayStarted("Europe/Madrid", new Date("2026-11-14T09:00:00Z"))).toBe(false);
     expect(workdayStarted(null, new Date("2026-11-10T08:00:00Z"))).toBe(true);
   });
+
+  it("respeta el fin de jornada: martes 21:00 Madrid no; 18:30 sí", () => {
+    expect(workdayStarted("Europe/Madrid", new Date("2026-11-10T20:00:00Z"))).toBe(false);
+    expect(workdayStarted("Europe/Madrid", new Date("2026-11-10T17:30:00Z"))).toBe(true);
+  });
 });
 
 describe("deliverDue", () => {
@@ -72,6 +77,39 @@ describe("deliverDue", () => {
   it("sin mailer no entrega (queda en la bandeja del backoffice)", async () => {
     await seed(1);
     expect(await deliverDue({ db, mailer: null, now: () => new Date("2026-11-10T07:15:00Z") })).toEqual({ delivered: 0, failed: 0 });
+  });
+});
+
+describe("deliverDue: promoción de leads incompletos fuera de horario", () => {
+  async function seedIncomplete(lastMsgAt: Date) {
+    await db.insert(sales_agent).values({ nombre: "Beto", email: "beto@bextia.test", zona_horaria: "Europe/Madrid" });
+    const [c] = await db.insert(contact).values({ email: "luz@example.com" }).returning();
+    const [conv] = await db.insert(conversation).values({ contact_id: c.id, canal: "email" }).returning();
+    await db.insert(message).values({ conversation_id: conv.id, canal: "email", direccion: "in", contenido: "Hola", external_id: "m1", created_at: lastMsgAt });
+    const [l] = await db.insert(lead).values({
+      contact_id: c.id, conversation_id: conv.id, estado: "respondido", fuera_de_horario: true, destino: "Japón",
+      created_at: new Date("2026-11-09T22:00:00Z"),
+    }).returning();
+    return l;
+  }
+
+  it("lead incompleto inactivo se asigna, se marca revisar y se entrega al inicio de jornada", async () => {
+    const l = await seedIncomplete(new Date("2026-11-09T22:00:00Z"));
+    const m = mailer();
+    expect(await deliverDue({ db, mailer: m, now: () => new Date("2026-11-10T07:05:00Z") })).toEqual({ delivered: 1, failed: 0 });
+    const [row] = await db.select().from(lead).where(eq(lead.id, l.id));
+    expect(row.estado).toBe("entregado");
+    expect(row.requiere_humano).toBe(true);
+    expect(m.sent[0].text).toContain("revisar");
+  });
+
+  it("un lead con actividad reciente (30 min) no se promueve", async () => {
+    const now = new Date("2026-11-10T07:05:00Z");
+    const l = await seedIncomplete(new Date(now.getTime() - 30 * 60_000));
+    const m = mailer();
+    expect(await deliverDue({ db, mailer: m, now: () => now })).toEqual({ delivered: 0, failed: 0 });
+    const [row] = await db.select().from(lead).where(eq(lead.id, l.id));
+    expect(row.estado).toBe("respondido");
   });
 });
 

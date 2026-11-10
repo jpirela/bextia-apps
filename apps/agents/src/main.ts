@@ -22,6 +22,7 @@ const db = createDb(env.databaseUrl);
 const { routes } = await import("../../../api/src/router.ts");
 
 const mailer = env.smtp ? createMailer(createSmtpTransport(env.smtp), { from: env.smtp.from }) : null;
+if (!mailer) console.warn("SMTP_* ausentes: los leads no se entregarán por email");
 const sendEmail = async (msg: OutboundMessage) => {
   if (!mailer || !msg.to.email) throw new Error("email: SMTP no configurado o falta destinatario");
   const r = await mailer.send({ to: msg.to.email, subject: msg.subject ?? "BEXTIA", text: msg.text });

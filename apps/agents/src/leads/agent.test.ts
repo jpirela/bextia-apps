@@ -74,6 +74,26 @@ describe("Agente 1 fuera de horario", () => {
     expect(notifyNow).not.toHaveBeenCalled();
   });
 
+  it("dos mensajes seguidos en segundo plano: una sola respuesta, sin respaldo", async () => {
+    const llm = createScriptedLlm({ classify: [q({ destino: "Japón" })], converse: [{ ok: true, value: "¡Japón! ¿Fechas?" }] });
+    const sent: OutboundMessage[] = [];
+    const agent = createLeadsAgent({
+      db, llm, kb: createStaticKb([]), notifyNow: async () => {}, now: () => new Date("2026-11-09T22:00:05Z"),
+      send: async (m) => { sent.push(m); return { externalId: `sent-${sent.length}` }; },
+    });
+    let done!: () => void;
+    const idle = new Promise<void>((r) => { done = r; });
+    let calls = 0;
+    const dispatch: typeof agent = async (ctx) => { try { await agent(ctx); } finally { if (++calls === 2) done(); } };
+    const run = createPipeline({ db, defaultMarket: "ES", contactLimiter: createRateLimiter({ limit: 100, windowMs: 60_000 }), dispatch, background: true });
+    await run(inbound("m1", "Hola"));
+    await run(inbound("m2", "quiero ir a Japón"));
+    await idle;
+    expect(sent.map((m) => m.text)).toEqual(["¡Japón! ¿Fechas?"]);
+    const [l] = await db.select().from(lead);
+    expect(l).toMatchObject({ estado: "respondido", requiere_humano: false });
+  });
+
   it("fallo del LLM: respuesta de respaldo y caso para humano", async () => {
     const { sent, run } = setup({ classify: [fail], converse: [fail] });
     await run(inbound("m1", "Hola"));

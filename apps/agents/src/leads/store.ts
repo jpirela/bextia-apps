@@ -1,4 +1,4 @@
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import type { Db } from "../db/index.ts";
 import { lead, type LeadState } from "../db/schema.ts";
 
@@ -55,6 +55,15 @@ export async function saveLead(
 ): Promise<LeadRow> {
   const to = patch.estado as LeadState | undefined;
   if (to && !canTransition(current.estado, to)) throw new InvalidTransitionError(current.estado, to);
-  const [row] = await db.update(lead).set(patch).where(eq(lead.id, current.id)).returning();
+  // Concurrencia optimista: si cambia el estado, solo se escribe si nadie lo movió desde que se leyó
+  // (evita, p. ej., que un turno obsoleto devuelva un lead "entregado" a "asignado").
+  const where = to && to !== current.estado
+    ? and(eq(lead.id, current.id), eq(lead.estado, current.estado))
+    : eq(lead.id, current.id);
+  const [row] = await db.update(lead).set(patch).where(where).returning();
+  if (!row) {
+    const [fresh] = await db.select().from(lead).where(eq(lead.id, current.id));
+    throw new InvalidTransitionError(fresh?.estado ?? current.estado, to as LeadState);
+  }
   return row;
 }
