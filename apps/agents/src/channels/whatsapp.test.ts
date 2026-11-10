@@ -23,13 +23,32 @@ function signedRequest(body: string, signature: string): Request {
 const cfg = { appSecret: SECRET, accessToken: "tok", phoneNumberId: "123" };
 
 describe("canal WhatsApp", () => {
-  it("normaliza solo mensajes de texto con firma válida", async () => {
+  it("normaliza mensajes de texto y marca los no textuales como unsupported con firma válida", async () => {
     const body = JSON.stringify(payload);
     const msgs = await createWhatsAppChannel(cfg).receive(signedRequest(body, `sha256=${hmacSha256Hex(SECRET, body)}`));
-    expect(msgs).toEqual([{
-      channel: "whatsapp", externalId: "wamid.A", from: { phone: "+34600000001", name: "Ana" },
-      text: "Hola, quiero ir a Japón", receivedAt: new Date(1762678800 * 1000),
-    }]);
+    expect(msgs).toEqual([
+      {
+        channel: "whatsapp", externalId: "wamid.A", from: { phone: "+34600000001", name: "Ana" },
+        text: "Hola, quiero ir a Japón", receivedAt: new Date(1762678800 * 1000),
+      },
+      {
+        channel: "whatsapp", externalId: "wamid.B", from: { phone: "+34600000001", name: "Ana" },
+        text: "[image]", unsupported: true, receivedAt: new Date(1762678801 * 1000),
+      },
+    ]);
+  });
+
+  it("convierte un mensaje no textual en unsupported (P4)", async () => {
+    const body = JSON.stringify({ entry: [{ changes: [{ value: {
+      contacts: [{ wa_id: "34600111222", profile: { name: "Luz" } }],
+      messages: [{ id: "wamid.IMG", from: "34600111222", timestamp: "1794100000", type: "image" }],
+    } }] }] });
+    const ch = createWhatsAppChannel({ appSecret: "as", accessToken: "t", phoneNumberId: "1" });
+    const req = new Request("http://x/webhooks/whatsapp", {
+      method: "POST", body, headers: { "x-hub-signature-256": `sha256=${hmacSha256Hex("as", body)}` },
+    });
+    const [m] = await ch.receive(req);
+    expect(m).toMatchObject({ externalId: "wamid.IMG", text: "[image]", unsupported: true, from: { phone: "+34600111222", name: "Luz" } });
   });
 
   it("rechaza una firma inválida", async () => {

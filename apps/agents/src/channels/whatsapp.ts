@@ -40,15 +40,17 @@ export function createWhatsAppChannel(cfg: WhatsAppConfig): ChannelAdapter {
           if (!change.value) continue;
           const names = new Map((change.value.contacts ?? []).map((c) => [c.wa_id, c.profile?.name]));
           for (const m of change.value.messages ?? []) {
-            if (m.type !== "text" || !m.text?.body) continue;
+            const isText = m.type === "text" && !!m.text?.body;
             const name = names.get(m.from);
-            out.push({
+            const msg: InboundMessage = {
               channel: "whatsapp",
               externalId: m.id,
               from: name ? { phone: `+${m.from}`, name } : { phone: `+${m.from}` },
-              text: m.text.body,
+              text: isText ? (m.text?.body as string) : `[${m.type}]`,
               receivedAt: new Date(Number(m.timestamp) * 1000),
-            });
+            };
+            if (!isText) msg.unsupported = true;
+            out.push(msg);
           }
         }
       }
