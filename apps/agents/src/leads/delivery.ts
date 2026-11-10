@@ -71,8 +71,9 @@ async function postWebhook(deps: DeliveryDeps, r: Row): Promise<void> {
 
 async function markDelivered(deps: DeliveryDeps, rows: Row[], at: Date): Promise<void> {
   for (const r of rows) {
-    await deps.db.update(lead).set({ estado: "entregado", entregado_at: at })
-      .where(and(eq(lead.id, r.lead.id), eq(lead.estado, "asignado")));
+    const updated = await deps.db.update(lead).set({ estado: "entregado", entregado_at: at })
+      .where(and(eq(lead.id, r.lead.id), eq(lead.estado, "asignado"))).returning({ id: lead.id });
+    if (updated.length === 0) continue; // otra entrega ganó la carrera: sin KPI ni webhook duplicados
     await deps.db.insert(kpi_event).values({
       tipo: "lead_entregado", agente: "leads", ref_id: r.lead.id,
       valor: (at.getTime() - r.lead.created_at.getTime()) / 60_000, // minutos hasta la entrega

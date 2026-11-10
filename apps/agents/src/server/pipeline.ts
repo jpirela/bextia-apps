@@ -22,6 +22,19 @@ export interface InboundOutcome {
 }
 
 export function createPipeline(deps: PipelineDeps): (msg: InboundMessage) => Promise<InboundOutcome> {
+  // Un dispatch a la vez por conversación (instancia única, ver P17): el siguiente mensaje del mismo
+  // cliente espera al anterior y ve su respuesta en el historial, en vez de correr en paralelo.
+  const queues = new Map<string, Promise<void>>();
+  const serialized = (conversationId: string, run: () => Promise<void>): Promise<void> => {
+    const start = (): Promise<void> => { try { return Promise.resolve(run()); } catch (err) { return Promise.reject(err); } };
+    const prev = queues.get(conversationId);
+    const p = prev ? prev.then(start, start) : start();
+    const tail = p.catch(() => {});
+    queues.set(conversationId, tail);
+    void tail.then(() => { if (queues.get(conversationId) === tail) queues.delete(conversationId); });
+    return p;
+  };
+
   return async (msg) => {
     const ing = await ingest(deps.db, msg);
     if (ing.duplicate) return { status: "duplicate", conversationId: ing.conversationId };
@@ -32,11 +45,15 @@ export function createPipeline(deps: PipelineDeps): (msg: InboundMessage) => Pro
       datos: { withinHours: decision.withinHours, market: decision.market },
     });
     const ctx = { msg, ingest: ing, decision };
-    if (deps.background) {
-      // Se pierde si el proceso cae a mitad (instancia única): ver P5 en docs/deuda-tecnica.md.
-      void deps.dispatch?.(ctx).catch((err) => console.error("dispatch en segundo plano falló", (err as Error).name));
-    } else {
-      await deps.dispatch?.(ctx);
+    const dispatch = deps.dispatch;
+    if (dispatch) {
+      const p = serialized(ing.conversationId, () => dispatch(ctx));
+      if (deps.background) {
+        // Se pierde si el proceso cae a mitad (instancia única): ver P5 en docs/deuda-tecnica.md.
+        void p.catch((err) => console.error("dispatch en segundo plano falló", (err as Error).name));
+      } else {
+        await p;
+      }
     }
     return { status: "routed", conversationId: ing.conversationId, decision };
   };

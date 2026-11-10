@@ -53,5 +53,24 @@ describe("pipeline", () => {
     release();
     await new Promise((r) => setTimeout(r, 0));
     expect(err).toHaveBeenCalledWith("dispatch en segundo plano falló", "RangeError");
+    err.mockRestore();
+  });
+
+  it("background: serializa el dispatch por conversación", async () => {
+    const order: string[] = [];
+    const releases: Array<() => void> = [];
+    const dispatch = vi.fn(({ msg: m }: { msg: InboundMessage }) => new Promise<void>((resolve) => {
+      order.push(`start ${m.externalId}`);
+      releases.push(() => { order.push(`end ${m.externalId}`); resolve(); });
+    }));
+    const run = createPipeline({ db, defaultMarket: "ES", contactLimiter: createRateLimiter({ limit: 10, windowMs: 60_000 }), dispatch, background: true });
+    await run(msg("m-1"));
+    await run(msg("m-2"));
+    await new Promise((r) => setTimeout(r, 0));
+    expect(order).toEqual(["start m-1"]);
+    releases[0]();
+    await new Promise((r) => setTimeout(r, 0));
+    expect(order).toEqual(["start m-1", "end m-1", "start m-2"]);
+    releases[1]();
   });
 });
