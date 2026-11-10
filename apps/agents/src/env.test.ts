@@ -6,7 +6,7 @@ const base = { DATABASE_URL: "postgres://x", API_TOKEN: "t" };
 describe("readEnv", () => {
   it("en producción exige CORS_ORIGINS", () => {
     expect(() => readEnv({ ...base, NODE_ENV: "production" })).toThrow("CORS_ORIGINS");
-    expect(readEnv({ ...base, NODE_ENV: "production", CORS_ORIGINS: "https://a.com" }).corsOrigins).toEqual(["https://a.com"]);
+    expect(readEnv({ ...base, NODE_ENV: "production", CORS_ORIGINS: "https://a.com", ANTHROPIC_API_KEY: "k" }).corsOrigins).toEqual(["https://a.com"]);
   });
 
   it("exige DATABASE_URL y API_TOKEN", () => {
@@ -33,5 +33,20 @@ describe("readEnv", () => {
     expect(env.corsOrigins).toEqual(["https://a.com", "https://b.com"]);
     expect(env.simulatorEnabled).toBe(true);
     expect(readEnv({ ...base, WHATSAPP_APP_SECRET: "s" }).whatsapp).toBeNull();
+  });
+});
+
+describe("env agente 1", () => {
+  it("ANTHROPIC_API_KEY obligatoria en producción", () => {
+    expect(() => readEnv({ ...base, NODE_ENV: "production", CORS_ORIGINS: "https://bo.test" })).toThrow(/ANTHROPIC_API_KEY/);
+  });
+  it("opcionales en desarrollo y agrupados", () => {
+    const e = readEnv({ ...base, SUPABASE_URL: "https://x.supabase.co", EMBED_SECRET: "s", LEADS_WEBHOOK_URL: "https://h" });
+    expect(e.anthropicApiKey).toBeNull();
+    expect(e.embed).toEqual({ url: "https://x.supabase.co", secret: "s" });
+    expect(e.leadsWebhook).toBeNull(); // falta LEADS_WEBHOOK_SECRET
+  });
+  it("SCORING_RULES_JSON inválido falla al arrancar", () => {
+    expect(() => readEnv({ ...base, SCORING_RULES_JSON: "{" })).toThrow(/SCORING_RULES_JSON/);
   });
 });

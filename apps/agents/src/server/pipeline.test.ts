@@ -43,4 +43,15 @@ describe("pipeline", () => {
     const sinContacto: InboundMessage = { ...msg("m-x"), from: {} };
     await expect(run(sinContacto)).rejects.toBeInstanceOf(MissingContactError);
   });
+
+  it("background: responde sin esperar al dispatch y registra su error", async () => {
+    const err = vi.spyOn(console, "error").mockImplementation(() => {});
+    let release!: () => void;
+    const dispatch = vi.fn(() => new Promise<void>((_, reject) => { release = () => reject(new RangeError("x")); }));
+    const run = createPipeline({ db, defaultMarket: "ES", contactLimiter: createRateLimiter({ limit: 10, windowMs: 60_000 }), dispatch, background: true });
+    expect((await run(msg("m-1"))).status).toBe("routed");
+    release();
+    await new Promise((r) => setTimeout(r, 0));
+    expect(err).toHaveBeenCalledWith("dispatch en segundo plano falló", "RangeError");
+  });
 });

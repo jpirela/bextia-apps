@@ -6,8 +6,9 @@ services:
     runtime: node
     plan: starter
     region: frankfurt
-    # Migraciones: se aplican a mano antes del primer deploy (docs/deuda-tecnica.md P14)
     buildCommand: yarn install --frozen-lockfile
+    # Migraciones en cada deploy (P14); DATABASE_URL_DIRECT = conexión de sesión (5432).
+    preDeployCommand: yarn workspace @bextia/agents db:migrate:deploy
     startCommand: yarn workspace @bextia/agents start
     healthCheckPath: /api/health
     autoDeploy: false
@@ -17,6 +18,18 @@ services:
       - key: NODE_ENV
         value: production
       - key: DATABASE_URL
+        sync: false
+      - key: DATABASE_URL_DIRECT
+        sync: false
+      - key: SUPABASE_URL
+        sync: false
+      - key: EMBED_SECRET
+        sync: false
+      - key: LEADS_WEBHOOK_URL
+        sync: false
+      - key: LEADS_WEBHOOK_SECRET
+        sync: false
+      - key: BACKOFFICE_URL
         sync: false
       - key: API_TOKEN
         generateValue: true

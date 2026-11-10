@@ -12,6 +12,7 @@ export interface PipelineDeps {
   defaultMarket: string;
   contactLimiter: RateLimiter;
   dispatch?: Dispatch; // Agente 1 / Agente 2 (subproyectos 2 y 3)
+  background?: boolean; // true en producción: el webhook responde sin esperar al LLM (P5)
 }
 
 export interface InboundOutcome {
@@ -30,7 +31,13 @@ export function createPipeline(deps: PipelineDeps): (msg: InboundMessage) => Pro
       tipo: "mensaje_recibido", agente: decision.agent, canal: msg.channel, ref_id: ing.conversationId,
       datos: { withinHours: decision.withinHours, market: decision.market },
     });
-    await deps.dispatch?.({ msg, ingest: ing, decision });
+    const ctx = { msg, ingest: ing, decision };
+    if (deps.background) {
+      // Se pierde si el proceso cae a mitad (instancia única): ver P5 en docs/deuda-tecnica.md.
+      void deps.dispatch?.(ctx).catch((err) => console.error("dispatch en segundo plano falló", (err as Error).name));
+    } else {
+      await deps.dispatch?.(ctx);
+    }
     return { status: "routed", conversationId: ing.conversationId, decision };
   };
 }

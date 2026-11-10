@@ -8,7 +8,14 @@ import { createMailer, createSmtpTransport } from "./notify/mailer.ts";
 import { createRateLimiter } from "./server/rate-limit.ts";
 import { createPipeline } from "./server/pipeline.ts";
 import { createApp, type RouteHandler } from "./server/app.ts";
-
+import Anthropic from "@anthropic-ai/sdk";
+import { createAnthropicLlm } from "./llm/anthropic.ts";
+import { createUnavailableLlm } from "./llm/unavailable.ts";
+import { createSupabaseEmbedder } from "./rag/embedder.ts";
+import { createPgvectorKb, createStaticKb } from "./rag/kb.ts";
+import { createLeadsAgent } from "./leads/agent.ts";
+import { deliverDue, deliverLead } from "./leads/delivery.ts";
+import { startInterval } from "./server/scheduler.ts";
 const env = readEnv(process.env);
 const db = createDb(env.databaseUrl);
 // Las rutas generadas abren su propia conexión al importarse (api/src/db/client.ts usa DATABASE_URL).
@@ -31,11 +38,34 @@ if (env.formWebhookSecret) channels.form = createJsonChannel({ name: "form", sec
 const simulator = env.simulatorEnabled ? createSimulatorChannel() : null;
 if (simulator) channels.sim = simulator.adapter;
 
+const llm = env.anthropicApiKey
+  ? createAnthropicLlm(new Anthropic({ apiKey: env.anthropicApiKey, maxRetries: 2, timeout: 20_000 }))
+  : createUnavailableLlm();
+if (!env.anthropicApiKey) console.warn("ANTHROPIC_API_KEY ausente: el Agente 1 responderá con el mensaje de respaldo");
+
+const kb = env.embed ? createPgvectorKb(db, createSupabaseEmbedder(env.embed)) : createStaticKb([]);
+if (!env.embed) console.warn("SUPABASE_URL/EMBED_SECRET ausentes: FAQs sin base de conocimiento");
+
+const delivery = { db, mailer, webhook: env.leadsWebhook, backofficeUrl: env.backofficeUrl };
+const leadsAgent = createLeadsAgent({
+  db, llm, kb, scoring: env.scoringRules,
+  send: (msg) => {
+    const ch = channels[msg.channel];
+    if (!ch) throw new Error(`canal ${msg.channel} no configurado`);
+    return ch.send(msg);
+  },
+  notifyNow: async (leadId) => { await deliverLead(delivery, leadId); },
+});
+
 const pipeline = createPipeline({
   db,
   defaultMarket: env.defaultMarket,
   contactLimiter: createRateLimiter({ limit: 20, windowMs: 60_000 }),
+  dispatch: leadsAgent,
+  background: true,
 });
+
+startInterval(() => deliverDue(delivery), 15 * 60_000, "entrega-leads");
 
 const app = createApp({
   apiToken: env.apiToken,
