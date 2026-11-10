@@ -12,7 +12,8 @@
     "test": "vitest run",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "db:generate": "drizzle-kit generate",
-    "db:migrate": "drizzle-kit migrate"
+    "db:migrate": "drizzle-kit migrate",
+    "kb:index": "node --env-file-if-exists=../../.env --import tsx src/rag/index-kb.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^1.6.0",
