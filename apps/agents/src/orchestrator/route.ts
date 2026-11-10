@@ -2,7 +2,7 @@ import { and, desc, eq, gte, lte, or, type SQL } from "drizzle-orm";
 import type { Db } from "../db/index.ts";
 import { booking, business_hours, type AgentName } from "../db/schema.ts";
 import type { ContactRow } from "../gateway/ingest.ts";
-import { isWithinBusinessHours, ruleFromRow } from "./business-hours.ts";
+import { InvalidBusinessHoursError, isWithinBusinessHours, ruleFromRow } from "./business-hours.ts";
 
 export interface RouteDecision {
   agent: AgentName;
@@ -30,6 +30,14 @@ export async function route(
   const bookingId = await findActiveBookingId(db, input.contact, input.at);
   const [bh] = await db.select().from(business_hours).where(eq(business_hours.mercado, market)).limit(1);
   // Sin horario configurado: se asume fuera de horario para que el agente atienda.
-  const withinHours = bh ? isWithinBusinessHours(ruleFromRow(bh), input.at) : false;
+  let withinHours = false;
+  if (bh) {
+    try {
+      withinHours = isWithinBusinessHours(ruleFromRow(bh), input.at);
+    } catch (err) {
+      if (!(err instanceof InvalidBusinessHoursError)) throw err;
+      console.warn(`route: horario inválido para el mercado ${market}; se asume fuera de horario`);
+    }
+  }
   return { agent: bookingId ? "incidents" : "leads", market, withinHours, bookingId };
 }
