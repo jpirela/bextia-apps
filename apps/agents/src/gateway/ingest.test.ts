@@ -1,9 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { createTestDb } from "../db/test-db.ts";
-import { contact, message } from "../db/schema.ts";
+import { eq } from "drizzle-orm";
+import { contact, conversation, message } from "../db/schema.ts";
+import { isUniqueViolation } from "../db/errors.ts";
 import type { Db } from "../db/index.ts";
 import type { InboundMessage } from "../channels/types.ts";
-import { ingest } from "./ingest.ts";
+import { completeContact, ingest } from "./ingest.ts";
 
 let db: Db;
 let close: () => Promise<void>;
@@ -57,5 +59,41 @@ describe("ingest", () => {
     const r = await ingest(db, { ...msg("wamid.11"), from: { phone: "+34600000005", email: "" } });
     expect(r.contact.telefono).toBe("+34600000005");
     expect(r.contact.email).toBeNull();
+  });
+});
+
+describe("agente1: conversación única y contacto completo", () => {
+  const base = (externalId: string, from: InboundMessage["from"]): InboundMessage => ({
+    channel: "sim", externalId, from, text: "hola", receivedAt: new Date("2026-11-09T22:00:00Z"),
+  });
+
+  it("dos mensajes simultáneos de un contacto nuevo comparten conversación (P9)", async () => {
+    const [a, b] = await Promise.all([
+      ingest(db, base("x-1", { email: "luz@example.com" })),
+      ingest(db, base("x-2", { email: "luz@example.com" })),
+    ]);
+    expect(a.conversationId).toBe(b.conversationId);
+    expect(await db.select().from(conversation)).toHaveLength(1);
+  });
+
+  it("la BD rechaza una segunda conversación abierta del mismo contacto y canal", async () => {
+    const r = await ingest(db, base("x-1", { email: "luz@example.com" }));
+    const err = await db.insert(conversation).values({ contact_id: r.contact.id, canal: "sim" }).then(() => null, (e) => e);
+    expect(isUniqueViolation(err)).toBe(true);
+  });
+
+  it("completa el email de un contacto encontrado por teléfono (P10)", async () => {
+    await ingest(db, base("x-1", { phone: "+34600111222" }));
+    const r = await ingest(db, base("x-2", { phone: "+34600111222", email: "luz@example.com", name: "Luz" }));
+    expect(r.contact).toMatchObject({ telefono: "+34600111222", email: "luz@example.com", nombre: "Luz" });
+  });
+
+  it("no falla si el email ya pertenece a otro contacto", async () => {
+    await ingest(db, base("x-1", { email: "otro@example.com" }));
+    const r1 = await ingest(db, base("x-2", { phone: "+34600111222" }));
+    const updated = await completeContact(db, r1.contact, { email: "otro@example.com" });
+    expect(updated.email).toBeNull();
+    const [row] = await db.select().from(contact).where(eq(contact.id, r1.contact.id));
+    expect(row.email).toBeNull();
   });
 });

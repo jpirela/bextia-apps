@@ -15,6 +15,13 @@
       "when": 1794084848358,
       "tag": "0001_base",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1794283800591,
+      "tag": "0002_agente1",
+      "breakpoints": true
     }
   ]
 }
