@@ -9,6 +9,7 @@ export interface InboundMessage {
   text: string;
   subject?: string;
   market?: string;
+  unsupported?: true; // contenido no textual (imagen, audio…): text = "[tipo]"
   receivedAt: Date;
 }
 
