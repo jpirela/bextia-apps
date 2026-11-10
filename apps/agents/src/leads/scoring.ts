@@ -66,13 +66,26 @@ export function parseScoringRules(json: string): ScoringRules {
   try { raw = JSON.parse(json); } catch { fail("JSON no parseable"); }
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) fail("se espera un objeto");
   checkNumbers(raw, "");
-  const r = raw as Partial<ScoringRules>;
+  const r = raw as Record<string, unknown>;
+  for (const k of Object.keys(r)) if (!(k in DEFAULT_SCORING)) fail(`clave desconocida "${k}"`);
+  for (const k of ["completeness", "urgencia", "grupo", "tipo"] as const) {
+    const v = r[k];
+    if (v !== undefined && (typeof v !== "object" || v === null || Array.isArray(v))) fail(`${k} debe ser un objeto`);
+  }
+  if (r.proximidad !== undefined) {
+    if (!Array.isArray(r.proximidad)) fail("proximidad debe ser una lista");
+    r.proximidad.forEach((p, i) => {
+      if (!p || typeof p !== "object" || Array.isArray(p) || typeof p.maxDias !== "number" || typeof p.puntos !== "number")
+        fail(`proximidad[${i}] requiere maxDias y puntos numéricos`);
+    });
+  }
+  const p = r as Partial<ScoringRules>;
   const d = DEFAULT_SCORING;
   return {
-    completeness: { ...d.completeness, ...r.completeness },
-    urgencia: { ...d.urgencia, ...r.urgencia },
-    proximidad: [...(r.proximidad ?? d.proximidad)].sort((a, b) => a.maxDias - b.maxDias),
-    grupo: { ...d.grupo, ...r.grupo },
-    tipo: { ...d.tipo, ...r.tipo },
+    completeness: { ...d.completeness, ...p.completeness },
+    urgencia: { ...d.urgencia, ...p.urgencia },
+    proximidad: [...(p.proximidad ?? d.proximidad)].sort((a, b) => a.maxDias - b.maxDias),
+    grupo: { ...d.grupo, ...p.grupo },
+    tipo: { ...d.tipo, ...p.tipo },
   };
 }

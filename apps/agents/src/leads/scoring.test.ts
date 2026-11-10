@@ -32,4 +32,11 @@ describe("parseScoringRules", () => {
     expect(() => parseScoringRules('{"grupo":{"puntos":"x"}}')).toThrow(/SCORING_RULES_JSON/);
     expect(() => parseScoringRules("no-json")).toThrow(/SCORING_RULES_JSON/);
   });
+  it("rechaza reglas con forma inválida", () => {
+    expect(() => parseScoringRules('{"proximidad":[{"maxDias":30}]}')).toThrow(/SCORING_RULES_JSON/);
+    expect(() => parseScoringRules('{"proximidad":5}')).toThrow(/SCORING_RULES_JSON/);
+    expect(() => parseScoringRules('{"proximidad":{}}')).toThrow(/SCORING_RULES_JSON/);
+    expect(() => parseScoringRules('{"completeness":5}')).toThrow(/SCORING_RULES_JSON/);
+    expect(() => parseScoringRules('{"urgnecia":{"alta":1}}')).toThrow(/SCORING_RULES_JSON/);
+  });
 });
