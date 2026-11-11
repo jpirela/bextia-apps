@@ -1,6 +1,6 @@
-import { and, desc, eq, gte, lte, ne, or, type SQL } from "drizzle-orm";
+import { and, desc, eq, gte, lte, ne, or, sql, type SQL } from "drizzle-orm";
 import type { Db } from "../db/index.ts";
-import { booking, business_hours, incident, type AgentName } from "../db/schema.ts";
+import { booking, business_hours, incident, incident_action, type AgentName } from "../db/schema.ts";
 import type { ContactRow } from "../gateway/ingest.ts";
 import { InvalidBusinessHoursError, isWithinBusinessHours, ruleFromRow } from "./business-hours.ts";
 
@@ -11,6 +11,9 @@ export interface RouteDecision {
   bookingId: string | null;
   verified: boolean; // el contacto coincide con la reserva (si no, el Agente 2 pide el apellido)
   providerIncidentId: string | null; // el remitente es el proveedor contactado por un protocolo
+  // El remitente es proveedor, pero no de una única incidencia en protocolo: varias (ambiguo) o
+  // ninguna en protocolo (fuera_de_protocolo). Nunca va a leads ni avanza un protocolo.
+  providerOther?: { motivo: "ambiguo" | "fuera_de_protocolo"; incidentIds: string[] };
 }
 
 export const BOOKING_CODE = /\b[A-Z]{2,4}-\d{4,8}\b/;
@@ -34,13 +37,36 @@ async function openIncident(db: Db, conversationId: string) {
   return row ?? null;
 }
 
-async function providerIncident(db: Db, c: ContactRow) {
-  const addrs = [c.telefono, c.email].filter((x): x is string => !!x);
+// Ventana en la que un remitente sigue reconociéndose como proveedor de una incidencia no cerrada.
+export const PROVIDER_WINDOW_MS = 7 * 24 * 60 * 60_000;
+
+type ProviderMatch =
+  | { kind: "one"; id: string; booking_id: string }
+  | { kind: "other"; booking_id: string; motivo: "ambiguo" | "fuera_de_protocolo"; incidentIds: string[] };
+
+// El remitente es proveedor si coincide (sin distinguir mayúsculas) con el proveedor_contacto de una
+// incidencia no cerrada con actividad en los últimos 7 días. La tabla no tiene updated_at: la última
+// actividad es la última acción registrada o, si no hay, la creación.
+// Varias en protocolo: no se puede saber a cuál responde → ninguna avanza (P37).
+async function providerIncident(db: Db, c: ContactRow, at: Date): Promise<ProviderMatch | null> {
+  const addrs = [c.telefono, c.email].filter((x): x is string => !!x).map((x) => x.trim().toLowerCase());
   if (addrs.length === 0) return null;
-  const [row] = await db.select({ id: incident.id, booking_id: incident.booking_id }).from(incident)
-    .where(and(eq(incident.estado, "protocolo"), or(...addrs.map((a) => eq(incident.proveedor_contacto, a)))))
-    .orderBy(desc(incident.created_at)).limit(1);
-  return row ?? null;
+  const since = new Date(at.getTime() - PROVIDER_WINDOW_MS);
+  const lastActivity = sql`coalesce((select max(${incident_action.created_at}) from ${incident_action} where ${incident_action.incident_id} = ${incident.id}), ${incident.created_at})`;
+  const rows = await db.select({ id: incident.id, booking_id: incident.booking_id, estado: incident.estado }).from(incident)
+    .where(and(
+      ne(incident.estado, "cerrado"),
+      or(...addrs.map((a) => sql`lower(${incident.proveedor_contacto}) = ${a}`)),
+      sql`${lastActivity} >= ${since.toISOString()}::timestamptz`,
+    ))
+    .orderBy(desc(incident.created_at));
+  if (rows.length === 0) return null;
+  const inProtocol = rows.filter((r) => r.estado === "protocolo");
+  if (inProtocol.length === 1) return { kind: "one", id: inProtocol[0].id, booking_id: inProtocol[0].booking_id };
+  if (inProtocol.length > 1) {
+    return { kind: "other", booking_id: inProtocol[0].booking_id, motivo: "ambiguo", incidentIds: inProtocol.map((r) => r.id) };
+  }
+  return { kind: "other", booking_id: rows[0].booking_id, motivo: "fuera_de_protocolo", incidentIds: rows.map((r) => r.id) };
 }
 
 async function bookingByCode(db: Db, text: string, at: Date): Promise<string | null> {
@@ -74,8 +100,11 @@ export async function route(
     const open = await openIncident(db, input.conversationId);
     if (open) return incidents(open.booking_id, open.estado !== "identificando");
   }
-  const prov = await providerIncident(db, input.contact);
-  if (prov) return incidents(prov.booking_id, false, prov.id);
+  const prov = await providerIncident(db, input.contact, input.at);
+  if (prov?.kind === "one") return incidents(prov.booking_id, false, prov.id);
+  if (prov) {
+    return { ...incidents(prov.booking_id, false), providerOther: { motivo: prov.motivo, incidentIds: prov.incidentIds } };
+  }
   const own = await findActiveBookingId(db, input.contact, input.at);
   if (own) return incidents(own, true);
   if (input.text) {

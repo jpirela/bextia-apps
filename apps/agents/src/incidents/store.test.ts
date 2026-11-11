@@ -57,6 +57,20 @@ describe("store de incidencias", () => {
     expect(d.cerrado_at).toEqual(now);
   });
 
+  it("I2: pasar a conversacional o seguimiento anula sla_vence; una reclasificación fija uno nuevo", async () => {
+    const { input } = await seed();
+    const a = await findOrCreateIncident(db, input);
+    const b = await saveIncident(db, a, { estado: "clasificando", urgencia: "baja" }, now);
+    expect(b.sla_vence).not.toBeNull();
+    const c = await saveIncident(db, b, { estado: "conversacional" }, now);
+    expect(c.sla_vence).toBeNull();
+    const later = new Date("2026-11-08T12:00:00Z");
+    const d = await saveIncident(db, c, { estado: "clasificando", urgencia: "alta" }, later);
+    expect(d.sla_vence).toEqual(new Date("2026-11-08T12:30:00Z"));
+    const e = await saveIncident(db, await saveIncident(db, d, { estado: "protocolo" }, later), { estado: "seguimiento" }, later);
+    expect(e.sla_vence).toBeNull();
+  });
+
   it("logAction guarda el monto con 2 decimales; recordKpi usa agente incidents", async () => {
     const { input } = await seed();
     const a = await findOrCreateIncident(db, input);

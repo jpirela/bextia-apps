@@ -7,7 +7,7 @@ import { loadDefaultDefinition, seedProtocol } from "../protocols/seed.ts";
 import * as engine from "../protocols/engine.ts";
 import { escalateWithNotice, isAuthorizableAmount, runProtocol, startProtocol, type RunnerDeps } from "./runner.ts";
 import { ESCALATED_REPLY } from "./prompts.ts";
-import { saveIncident, type IncidentRow } from "./store.ts";
+import { claimWait, saveIncident, type IncidentRow } from "./store.ts";
 
 vi.mock("../protocols/engine.ts", async (importOriginal) => {
   const m = await importOriginal<typeof import("../protocols/engine.ts")>();
@@ -154,6 +154,50 @@ describe("runner", () => {
       const row = await runProtocol(deps({ now: () => new Date("2026-11-08T10:20:00Z") }), started, { tipo: "vencimiento" }, t);
       expect(row.estado).toBe("seguimiento");
       expect(await actionTypes()).toContain("autorizacion");
+    });
+  });
+
+  describe("M7: esperas sin colgar", () => {
+    it("startProtocol anula proximo_paso_at al pasar a protocolo (si el runner lanza, no queda un temporizador viejo)", async () => {
+      await seedProtocol(db, { tope: 40, moneda: "EUR" });
+      const { inc, t } = await seed();
+      const ready = await saveIncident(db, inc, { proximo_paso_at: new Date("2026-11-09T10:05:00Z") }, now);
+      // Falla el guardado del avance de runProtocol, justo después del commit de startProtocol.
+      const failing = new Proxy(db, {
+        get(o, p, r) {
+          if (p !== "update") { const v = Reflect.get(o, p, r); return typeof v === "function" ? v.bind(o) : v; }
+          return (tbl: never) => {
+            const b = (o.update as (x: never) => { set: (v: Record<string, unknown>) => unknown })(tbl);
+            return { set: (v: Record<string, unknown>) => {
+              if ("protocolo_estado" in v) throw new TypeError("fallo simulado");
+              return b.set(v);
+            } };
+          };
+        },
+      }) as Db;
+      await expect(startProtocol(deps({ db: failing }), ready, "traslado_no_presentado", t)).rejects.toThrow(TypeError);
+      expect(await reload(inc.id)).toMatchObject({ estado: "protocolo", proximo_paso_at: null });
+    });
+
+    it("vencimiento prematuro tras reclamar la espera → la devuelve (restoreWait)", async () => {
+      await seedProtocol(db, { tope: 40, moneda: "EUR" });
+      const { inc, t } = await seed();
+      const started = await startProtocol(deps(), inc, "traslado_no_presentado", t);
+      expect(await claimWait(db, inc.id)).toBe(true);
+      const claimed = { ...started, proximo_paso_at: null };
+      const row = await runProtocol(deps({ now: () => new Date("2026-11-08T10:19:00Z") }), claimed, { tipo: "vencimiento" }, t);
+      expect(row.estado).toBe("protocolo");
+      expect((await reload(inc.id)).proximo_paso_at).toEqual(new Date("2026-11-08T10:20:00Z"));
+    });
+
+    it("evento sin acciones tras reclamar la espera → la devuelve (restoreWait)", async () => {
+      await seedProtocol(db, { tope: 40, moneda: "EUR" });
+      const { inc, t } = await seed();
+      const started = await startProtocol(deps(), inc, "traslado_no_presentado", t);
+      expect(await claimWait(db, inc.id)).toBe(true);
+      const row = await runProtocol(deps(), { ...started, proximo_paso_at: null }, { tipo: "inicio" }, t);
+      expect(row.estado).toBe("protocolo");
+      expect((await reload(inc.id)).proximo_paso_at).toEqual(new Date("2026-11-08T10:20:00Z"));
     });
   });
 

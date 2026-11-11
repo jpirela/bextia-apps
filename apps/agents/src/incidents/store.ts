@@ -60,7 +60,12 @@ export interface SaveOptions {
   // Condiciona además sobre protocolo_estado = current.protocolo_estado (igualdad jsonb): cerrojo
   // optimista del runner para que dos avances del mismo paso no ejecuten efectos dos veces.
   guardProtocolState?: boolean;
+  // Condición adicional del UPDATE (p. ej. el escalado por SLA exige que el SLA siga vencido).
+  where?: SQL;
 }
+
+// Estados en los que ya hay respuesta al viajero: el SLA de primera atención deja de correr.
+const SLA_ATTENDED: IncidentState[] = ["conversacional", "seguimiento"];
 
 export async function saveIncident(
   db: Db, current: IncidentRow, patch: IncidentPatch, now = new Date(), opts: SaveOptions = {},
@@ -75,7 +80,10 @@ export async function saveIncident(
       ? isNull(incident.protocolo_estado)
       : sql`${incident.protocolo_estado} = ${JSON.stringify(current.protocolo_estado)}::jsonb`);
   }
-  if (patch.urgencia && !current.sla_vence && !patch.sla_vence) {
+  if (opts.where) conds.push(opts.where);
+  if (SLA_ATTENDED.includes(next) && patch.sla_vence === undefined) {
+    set.sla_vence = null;
+  } else if (patch.urgencia && !current.sla_vence && !patch.sla_vence) {
     set.sla_vence = new Date(now.getTime() + SLA_MINUTES[patch.urgencia] * 60_000);
     conds.push(isNull(incident.sla_vence));
   }

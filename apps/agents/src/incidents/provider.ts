@@ -94,12 +94,13 @@ const SYSTEM = [
   "tipo = eta con minutos si indica un tiempo de llegada; rechazo si no puede ir; desconocido en otro caso.",
 ].join("\n");
 
-export async function parseProviderReply(llm: Llm, text: string): Promise<ProviderReply> {
+// `forLlm` redacta el texto antes de enviarlo al LLM (nombre del viajero, código, proveedor...).
+export async function parseProviderReply(llm: Llm, text: string, forLlm?: (t: string) => string): Promise<ProviderReply> {
   if (REJECT_RE.test(norm(text))) return { tipo: "rechazo" };
   const eta = parseEtaRegex(text);
   if (eta !== null) return { tipo: "eta", minutos: eta };
   const r = await llm.classify<{ tipo: "eta" | "rechazo" | "desconocido"; minutos: number | null }>({
-    system: SYSTEM, input: text.slice(0, 500), jsonSchema: JSON_SCHEMA, fields: FIELDS,
+    system: SYSTEM, input: (forLlm ? forLlm(text) : text).slice(0, 500), jsonSchema: JSON_SCHEMA, fields: FIELDS,
   });
   if (!r.ok) return { tipo: "desconocido" };
   if (r.value.tipo === "eta") {

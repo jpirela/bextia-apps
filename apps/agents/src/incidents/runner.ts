@@ -5,12 +5,12 @@ import type { Mailer } from "../notify/mailer.ts";
 import { advance } from "../protocols/engine.ts";
 import { parseProtocol } from "../protocols/parse.ts";
 import type { ProtocolContext, ProtocolDef, ProtocolEvent } from "../protocols/types.ts";
-import { escalateIncidentResult, type EscalationExtra } from "./escalate.ts";
+import { escalateIncidentResult, markTerminated, type EscalationExtra } from "./escalate.ts";
 import { ESCALATED_REPLY } from "./prompts.ts";
 import { providerTarget, type ProviderChannels, type ProviderTarget } from "./provider.ts";
 import { sendProvider, sendTraveler, targetFromIncident, type AgentIo, type TravelerTarget } from "./reply.ts";
 import {
-  INACTIVITY_MS, logAction, recordKpi, saveIncident, StaleIncidentError,
+  INACTIVITY_MS, logAction, recordKpi, restoreWait, saveIncident, StaleIncidentError,
   type IncidentPatch, type IncidentRow, type SaveOptions,
 } from "./store.ts";
 
@@ -23,9 +23,14 @@ function sameState(a: State, b: State): boolean {
     && a.autorizado === b.autorizado && a.terminado === b.terminado;
 }
 
-// Al escalar por un fallo del runner, el protocolo queda terminado en la misma escritura del escalado.
-const markTerminated: EscalationExtra = (c) =>
-  c.protocolo_estado ? { protocolo_estado: { ...c.protocolo_estado, terminado: true } } : {};
+// Salida sin efectos tras haber reclamado la espera (claimWait): se devuelve la espera previa
+// (espera_hasta) para que el barrido la vuelva a ver. Solo si nadie la reprogramó ni avanzó el protocolo.
+async function releaseClaim(db: Db, inc: IncidentRow): Promise<IncidentRow> {
+  const at = inc.protocolo_estado?.espera_hasta;
+  if (inc.estado !== "protocolo" || inc.proximo_paso_at || !at) return inc;
+  const restored = { ...inc, proximo_paso_at: new Date(at) };
+  return (await restoreWait(db, restored)) ? restored : inc;
+}
 
 export interface RunnerDeps extends AgentIo { mailer: Mailer | null; backofficeUrl?: string | null; providerChannels: ProviderChannels }
 export interface LoadedProtocol { id: string; def: ProtocolDef; tope: number; moneda: string }
@@ -87,7 +92,9 @@ export async function startProtocol(deps: RunnerDeps, inc: IncidentRow, codigo: 
   const p = await loadProtocol(deps.db, codigo);
   if (!p) return escalateWithNotice(deps, inc, "sin_protocolo", t);
   // La transición a "protocolo" es el cerrojo: si dos arranques compiten, solo uno sigue.
-  const { row, won } = await commit(deps.db, inc, { estado: "protocolo", protocol_id: p.id }, deps.now());
+  // proximo_paso_at: null — anula el cierre por inactividad heredado; si el arranque falla después,
+  // no queda un temporizador que cierre la incidencia ni dispare un vencimiento sin espera.
+  const { row, won } = await commit(deps.db, inc, { estado: "protocolo", protocol_id: p.id, proximo_paso_at: null }, deps.now());
   if (!won) return row;
   return runProtocol(deps, row, { tipo: "inicio" }, t);
 }
@@ -102,7 +109,7 @@ export async function runProtocol(deps: RunnerDeps, inc: IncidentRow, event: Pro
 
   // Un vencimiento solo dispara si la espera ya venció (espera_hasta <= now).
   const prev = inc.protocolo_estado;
-  if (event.tipo === "vencimiento" && prev?.espera_hasta && new Date(prev.espera_hasta).getTime() > now.getTime()) return inc;
+  if (event.tipo === "vencimiento" && prev?.espera_hasta && new Date(prev.espera_hasta).getTime() > now.getTime()) return releaseClaim(db, inc);
 
   const [b] = await db.select().from(booking).where(eq(booking.id, inc.booking_id));
   if (!b) return escalateWithNotice(deps, inc, "sin_reserva", t);
@@ -112,7 +119,7 @@ export async function runProtocol(deps: RunnerDeps, inc: IncidentRow, event: Pro
     booking: { codigo: b.codigo, viajero_nombre: b.viajero_nombre }, servicio,
   };
   const r = advance(p.def, prev, event, ctx);
-  if (r.actions.length === 0) return inc;
+  if (r.actions.length === 0) return releaseClaim(db, inc);
   // El cerrojo del commit es protocolo_estado previo: todo avance con efectos debe cambiarlo.
   // Si no cambia (definición cíclica en el mismo milisegundo, p. ej.), no hay cerrojo: se escala sin efectos.
   if (sameState(r.state, prev)) return escalateWithNotice(deps, inc, "estado_sin_cambio", t);

@@ -1,8 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { eq } from "drizzle-orm";
 import { createTestDb } from "../db/test-db.ts";
 import type { Db } from "../db/index.ts";
 import { booking, incident, incident_action, kpi_event, on_call } from "../db/schema.ts";
-import type { InboundMessage, OutboundMessage } from "../channels/types.ts";
+import type { Channel, InboundMessage, OutboundMessage } from "../channels/types.ts";
+import { message } from "../db/schema.ts";
+import type { KbHit } from "../rag/kb.ts";
 import { ingest } from "../gateway/ingest.ts";
 import { createScriptedLlm } from "../llm/scripted.ts";
 import type { LlmResult } from "../llm/types.ts";
@@ -64,7 +67,10 @@ const failingDecisionLog = failingInsert(incident_action, (v) => v.tipo === "dec
 // Falla la creación de la incidencia: error antes de que exista.
 const failingIncidentCreate = failingInsert(incident, () => true);
 
-async function setup(script: Parameters<typeof createScriptedLlm>[0] = {}, opts: { agentDb?: (db: Db) => Db; mailer?: Mailer } = {}) {
+async function setup(
+  script: Parameters<typeof createScriptedLlm>[0] = {},
+  opts: { agentDb?: (db: Db) => Db; mailer?: Mailer; kb?: KbHit[] } = {},
+) {
   now = new Date("2026-11-08T10:05:00Z");
   sent = [];
   await db.insert(booking).values({
@@ -77,12 +83,13 @@ async function setup(script: Parameters<typeof createScriptedLlm>[0] = {}, opts:
   const llm = createScriptedLlm(script);
   const agent = createIncidentsAgent({
     db: opts.agentDb ? opts.agentDb(db) : db, llm, mailer: opts.mailer ?? null, now: () => now, providerChannels: { whatsapp: false, email: false, sim: true },
-    kb: createStaticKb([{ id: "k1", titulo: "Check-in del hotel", contenido: "Desde las 15:00.", similarity: 0.9 }]),
+    kb: createStaticKb(opts.kb ?? [{ id: "k1", titulo: "Check-in del hotel", contenido: "Desde las 15:00.", similarity: 0.9 }]),
     send: async (m) => { sent.push(m); return { externalId: "" }; },
   });
   const run = createPipeline({ db, defaultMarket: "ES", contactLimiter: createRateLimiter({ limit: 100, windowMs: 60_000 }), dispatch: agent });
-  const inbound = (email: string, text: string): InboundMessage => ({ channel: "sim", externalId: `m-${++n}`, from: { email }, text, receivedAt: now });
-  const say = (email: string, text: string) => run(inbound(email, text));
+  const inbound = (email: string, text: string, channel: Channel = "sim"): InboundMessage =>
+    ({ channel, externalId: `m-${++n}`, from: { email }, text, receivedAt: now });
+  const say = (email: string, text: string, channel: Channel = "sim") => run(inbound(email, text, channel));
   return { llm, say, agent, inbound };
 }
 
@@ -346,6 +353,88 @@ describe("Agente 2", () => {
     await expect(say("ana@example.com", "Tengo un problema")).resolves.toMatchObject({ status: "routed" });
     expect(await inc()).toMatchObject({ estado: "escalado", requiere_humano: true });
     expect(to("ana@example.com").at(-1)).toBe(ESCALATED_REPLY);
+  });
+
+  it("I1: consulta sin artículos KB → escala con sin_kb y no llama a converse", async () => {
+    const { say, llm } = await setup({ classify: [cls({ tipologia: "consulta", urgencia: "baja" })] }, { kb: [] });
+    await say("ana@example.com", "¿Hay piscina en el hotel?");
+    expect(llm.calls.converse).toHaveLength(0);
+    expect(await inc()).toMatchObject({ estado: "escalado", requiere_humano: true });
+    const esc = (await db.select().from(incident_action)).find((a) => a.tipo === "escalado");
+    expect(esc?.detalle).toMatchObject({ motivo: "sin_kb" });
+    expect(to("ana@example.com").filter((t) => t === ESCALATED_REPLY)).toHaveLength(1);
+  });
+
+  it("I1: con artículos, el prompt pide responder solo con la KB y no promete contacto", async () => {
+    const { say, llm } = await setup({
+      classify: [cls({ tipologia: "consulta", urgencia: "baja" })],
+      converse: [{ ok: true, value: "Desde las 15:00." }],
+    });
+    await say("ana@example.com", "¿A qué hora es el check-in?");
+    const system = llm.calls.converse[0].system;
+    expect(system).not.toMatch(/escribir[áa]n|contactar[áa]n|en breve/i);
+    expect(system).toContain("no tienes esa información");
+  });
+
+  it("I6: error en el canal web → TEMPORARY_ERROR_REPLY queda en los mensajes de la conversación", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    const { say } = await setup({}, { agentDb: failingIncidentCreate });
+    const out = await say("ana@example.com", "El traslado no ha llegado", "web");
+    const msgs = await db.select().from(message).where(eq(message.conversation_id, out.conversationId));
+    expect(msgs.filter((m) => m.direccion === "out").map((m) => m.contenido)).toEqual([TEMPORARY_ERROR_REPLY]);
+  });
+
+  it("I5: la respuesta del proveedor llega al LLM sin nombre del viajero, código ni proveedor", async () => {
+    const { say, llm } = await setup({ classify: [cls(), { ok: true, value: { tipo: "desconocido", minutos: null } }] });
+    await say("ana@example.com", "El traslado no ha llegado");
+    await say("ops@translis.test", "Somos TransLis: ¿Ana García López sigue esperando? Reserva BX-1001");
+    expect(llm.calls.classify).toHaveLength(2);
+    const prompt = JSON.stringify(llm.calls.classify[1]);
+    for (const s of ["TransLis", "Ana", "García", "López", "BX-1001"]) expect(prompt).not.toContain(s);
+  });
+
+  it("I4: «ya llegamos» del proveedor en seguimiento no va a leads ni responde", async () => {
+    const { say } = await setup({ classify: [cls()] });
+    await say("ana@example.com", "El traslado no ha llegado");
+    await say("ops@translis.test", "20 min");
+    expect((await inc()).estado).toBe("seguimiento");
+    const before = sent.length;
+    const out = await say("ops@translis.test", "Ya llegamos, gracias");
+    expect(out.decision?.agent).toBe("incidents");
+    expect(sent).toHaveLength(before);
+    expect((await inc()).estado).toBe("seguimiento");
+    const k = (await db.select().from(kpi_event)).find((e) => e.tipo === "mensaje_proveedor_descartado");
+    expect(k?.datos).toEqual({ estado: "seguimiento" });
+  });
+
+  it("I4: el email del proveedor en mayúsculas coincide", async () => {
+    const { say } = await setup({ classify: [cls()] });
+    await say("ana@example.com", "El traslado no ha llegado");
+    await say("OPS@TRANSLIS.TEST", "Llegamos en 20 min");
+    expect(to("ana@example.com")).toContain("Buenas noticias: TransLis llega en unos 20 minutos a Aeropuerto LIS.");
+    expect((await inc()).estado).toBe("seguimiento");
+  });
+
+  it("I3: dos viajeros con el mismo proveedor → ninguno avanza; ambos escalan con proveedor_ambiguo", async () => {
+    const { say } = await setup({ classify: [cls(), cls()] });
+    await db.insert(booking).values({
+      codigo: "BX-1002", viajero_nombre: "Luis Pérez Gómez", destino: "Lisboa", viajero_email: "luis@example.com",
+      inicio: new Date("2026-11-07T00:00:00Z"), fin: new Date("2026-11-15T00:00:00Z"),
+      servicios: [{ tipo: "traslado", proveedor: "TransLis", email: "ops@translis.test", inicio: "2026-11-08T10:00:00Z", lugar: "Aeropuerto LIS", referencia: "TL-78" }],
+    });
+    await say("ana@example.com", "El traslado no ha llegado");
+    await say("luis@example.com", "El traslado no ha llegado");
+    expect((await db.select().from(incident)).map((i) => i.estado)).toEqual(["protocolo", "protocolo"]);
+    await say("ops@translis.test", "Llegamos en 20 min");
+    const rows = await db.select().from(incident);
+    expect(rows.map((i) => i.estado)).toEqual(["escalado", "escalado"]);
+    for (const r of rows) expect(r.protocolo_estado?.terminado).toBe(true);
+    for (const who of ["ana@example.com", "luis@example.com"]) {
+      expect(to(who).filter((t) => t.startsWith("Buenas noticias"))).toHaveLength(0);
+      expect(to(who).filter((t) => t === ESCALATED_REPLY)).toHaveLength(1);
+    }
+    const motivos = (await db.select().from(incident_action)).filter((a) => a.tipo === "escalado").map((a) => a.detalle.motivo);
+    expect(motivos).toEqual(["proveedor_ambiguo", "proveedor_ambiguo"]);
   });
 
   it("decisión de leads → no hace nada", async () => {

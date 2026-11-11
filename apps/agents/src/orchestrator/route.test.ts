@@ -119,7 +119,41 @@ describe("ruteo agente 2", () => {
     const prov = await newContact("+351910000000");
     expect(await route(db, { contact: prov, at, defaultMarket: "ES", text: "Llego en 10 min" }))
       .toMatchObject({ agent: "incidents", providerIncidentId: inc.id, bookingId: b.id, verified: false });
+    // I4: tras el protocolo sigue siendo el proveedor: no va a leads, se descarta sin respuesta.
     await db.update(incident).set({ estado: "seguimiento" });
+    expect(await route(db, { contact: prov, at, defaultMarket: "ES", text: "ok" })).toMatchObject({
+      agent: "incidents", bookingId: b.id, providerIncidentId: null,
+      providerOther: { motivo: "fuera_de_protocolo", incidentIds: [inc.id] },
+    });
+    await db.update(incident).set({ estado: "cerrado" });
     expect(await route(db, { contact: prov, at, defaultMarket: "ES", text: "ok" })).toMatchObject({ agent: "leads" });
+  });
+
+  it("I4: email del proveedor comparado sin mayúsculas en ambos lados", async () => {
+    const b = await activeBooking();
+    const [inc] = await db.insert(incident).values({ booking_id: b.id, estado: "protocolo", proveedor_contacto: "Ops@TransLis.test" }).returning();
+    const [prov] = await db.insert(contact).values({ email: "OPS@TRANSLIS.TEST" }).returning();
+    expect(await route(db, { contact: prov, at, defaultMarket: "ES", text: "20 min" }))
+      .toMatchObject({ agent: "incidents", providerIncidentId: inc.id });
+  });
+
+  it("I4: incidencia del proveedor sin actividad en 7 días → ya no lo reconoce", async () => {
+    const b = await activeBooking();
+    await db.insert(incident).values({
+      booking_id: b.id, estado: "seguimiento", proveedor_contacto: "+351910000000", created_at: new Date("2026-11-01T00:00:00Z"),
+    });
+    const prov = await newContact("+351910000000");
+    expect(await route(db, { contact: prov, at, defaultMarket: "ES", text: "ok" })).toMatchObject({ agent: "leads" });
+  });
+
+  it("I3: dos incidencias en protocolo con el mismo proveedor → ambiguo, ninguna recibe la respuesta", async () => {
+    const b1 = await activeBooking();
+    const b2 = await activeBooking({ codigo: "BX-1002" });
+    const [i1] = await db.insert(incident).values({ booking_id: b1.id, estado: "protocolo", proveedor_contacto: "+351910000000" }).returning();
+    const [i2] = await db.insert(incident).values({ booking_id: b2.id, estado: "protocolo", proveedor_contacto: "+351910000000" }).returning();
+    const prov = await newContact("+351910000000");
+    const d = await route(db, { contact: prov, at, defaultMarket: "ES", text: "20 min" });
+    expect(d).toMatchObject({ agent: "incidents", providerIncidentId: null, providerOther: { motivo: "ambiguo" } });
+    expect([...d.providerOther!.incidentIds].sort()).toEqual([i1.id, i2.id].sort());
   });
 });

@@ -6,6 +6,8 @@ import type { OutboundMessage } from "../channels/types.ts";
 import { seedProtocol } from "../protocols/seed.ts";
 import { startProtocol, type RunnerDeps } from "./runner.ts";
 import { closeStale, escalateOverdue, runDueTimers } from "./sla.ts";
+import { saveIncident } from "./store.ts";
+import { eq } from "drizzle-orm";
 
 let db: Db;
 let close: () => Promise<void>;
@@ -125,6 +127,70 @@ describe("escalateOverdue", () => {
     await Promise.all([escalateOverdue(deps(t0)), escalateOverdue(deps(t0))]);
     expect((await db.select().from(kpi_event)).filter((k) => k.tipo === "sla_incumplido")).toHaveLength(1);
     expect(sent).toHaveLength(1);
+  });
+});
+
+// BD cuyo primer select (la lectura del barrido) ejecuta `hook` justo después de devolver las filas:
+// simula que otro proceso cambia la incidencia entre la lectura y el guardado del escalado.
+function raceAfterFirstSelect(hook: () => Promise<void>): Db {
+  let armed = true;
+  const wrap = (b: object): object => new Proxy(b, {
+    get(t, p) {
+      if (p === "then") {
+        const then = (t as PromiseLike<unknown>).then.bind(t);
+        return (res: (v: unknown) => unknown, rej: (e: unknown) => unknown) =>
+          then(async (rows) => { await hook(); return rows; }).then(res, rej);
+      }
+      const v = Reflect.get(t, p, t);
+      if (typeof v !== "function") return v;
+      return (...a: unknown[]) => {
+        const r = (v as (...x: unknown[]) => unknown).apply(t, a);
+        return r && typeof r === "object" && "then" in r ? wrap(r) : r;
+      };
+    },
+  });
+  return new Proxy(db, {
+    get(o, p, r) {
+      if (p !== "select") { const v = Reflect.get(o, p, r); return typeof v === "function" ? v.bind(o) : v; }
+      return (...a: unknown[]) => {
+        const b = (o.select as (...x: unknown[]) => object)(...a);
+        if (!armed) return b;
+        armed = false;
+        return wrap(b);
+      };
+    },
+  });
+}
+
+describe("escalateOverdue: solo escala lo que sigue pendiente (I2)", () => {
+  it("una consulta con sla_vence vencido que pasó a conversacional no se escala", async () => {
+    const { inc } = await seed();
+    await db.update(incident).set({ sla_vence: new Date("2026-11-08T10:00:00Z"), urgencia: "baja" });
+    const [cur] = await db.select().from(incident).where(eq(incident.id, inc.id));
+    const raced = raceAfterFirstSelect(async () => { await saveIncident(db, cur, { estado: "conversacional" }, t0); });
+    expect(await escalateOverdue({ ...deps(t0), db: raced })).toBe(0);
+    expect(await row()).toMatchObject({ estado: "conversacional", requiere_humano: false, sla_vence: null });
+    expect(sent).toHaveLength(0);
+  });
+
+  it("una fila que el runner pasó a seguimiento entre la lectura y el guardado no se escala", async () => {
+    const { inc } = await seed();
+    await db.update(incident).set({ estado: "protocolo", sla_vence: new Date("2026-11-08T10:00:00Z"), urgencia: "alta" });
+    const [cur] = await db.select().from(incident).where(eq(incident.id, inc.id));
+    const raced = raceAfterFirstSelect(async () => { await saveIncident(db, cur, { estado: "seguimiento" }, t0); });
+    expect(await escalateOverdue({ ...deps(t0), db: raced })).toBe(0);
+    expect(await row()).toMatchObject({ estado: "seguimiento", requiere_humano: false });
+    expect(sent).toHaveLength(0);
+  });
+
+  it("M9: el escalado por SLA de un protocolo lo marca terminado", async () => {
+    await seedProtocol(db, { tope: 40, moneda: "EUR" });
+    const { inc, t } = await seed();
+    await startProtocol(deps(t0), inc, "traslado_no_presentado", t);
+    await db.update(incident).set({ sla_vence: new Date("2026-11-08T10:00:00Z"), urgencia: "alta" });
+    expect(await escalateOverdue(deps(new Date("2026-11-08T10:06:00Z")))).toBe(1);
+    expect(await row()).toMatchObject({ estado: "escalado" });
+    expect((await row()).protocolo_estado?.terminado).toBe(true);
   });
 });
 

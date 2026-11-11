@@ -38,6 +38,19 @@ async function trace(fn: () => Promise<void>): Promise<void> {
   try { await fn(); } catch (err) { console.error("incidencias: traza de envío fallida", (err as Error).name); }
 }
 
+// Guarda el saliente en la conversación (el canal web solo persiste: el widget lee de aquí).
+// Nunca lanza: si el canal ya entregó, un fallo de la traza no debe provocar un reenvío.
+export async function persistOutbound(
+  io: AgentIo, conversationId: string, channel: Channel, text: string, externalId: string, at = io.now(),
+): Promise<void> {
+  await trace(async () => {
+    await io.db.insert(message).values({
+      conversation_id: conversationId, canal: channel, direccion: "out", contenido: text,
+      external_id: externalId || `out-${randomUUID()}`, agente: "incidents", created_at: at,
+    });
+  });
+}
+
 export async function sendTraveler(io: AgentIo, t: TravelerTarget, incidentId: string, text: string, receivedAt?: Date): Promise<boolean> {
   let externalId: string;
   try {
@@ -48,12 +61,7 @@ export async function sendTraveler(io: AgentIo, t: TravelerTarget, incidentId: s
     return false;
   }
   const at = io.now();
-  await trace(async () => {
-    await io.db.insert(message).values({
-      conversation_id: t.conversationId, canal: t.channel, direccion: "out", contenido: text,
-      external_id: externalId || `out-${randomUUID()}`, agente: "incidents", created_at: at,
-    });
-  });
+  await persistOutbound(io, t.conversationId, t.channel, text, externalId, at);
   await trace(() => logAction(io.db, incidentId, "mensaje_viajero", { canal: t.channel, texto: text }));
   await trace(() => recordKpi(io.db, "respuesta_enviada", {
     ref_id: incidentId, canal: t.channel, valor: receivedAt ? at.getTime() - receivedAt.getTime() : undefined,

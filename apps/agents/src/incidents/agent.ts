@@ -1,6 +1,6 @@
 import { and, eq, isNull } from "drizzle-orm";
 import type { Db } from "../db/index.ts";
-import { booking, incident, type BookingService } from "../db/schema.ts";
+import { booking, incident } from "../db/schema.ts";
 import type { Channel, ChannelAdapter, InboundMessage } from "../channels/types.ts";
 import type { IngestResult } from "../gateway/ingest.ts";
 import type { Turn } from "../leads/qualify.ts";
@@ -11,13 +11,14 @@ import type { KbHit, KnowledgeBase } from "../rag/kb.ts";
 import type { Dispatch } from "../server/pipeline.ts";
 import { toMessageParams } from "../leads/prompts.ts";
 import { classifyIncident, decideRoute, detectEmergency } from "./classify.ts";
-import { escalateIncidentResult, renotifyOnCall, type EscalationExtra } from "./escalate.ts";
+import { escalateIncidentResult, markTerminated, renotifyOnCall } from "./escalate.ts";
+import { norm, redactForLlm } from "./redact.ts";
 import {
   ASK_NAME, EMERGENCY_REPLY, ESCALATED_REPLY, ESCALATED_WAIT, FEEDBACK_THANKS, IDENTIFIED_REPLY, NAME_MISMATCH,
   PROTOCOL_IN_PROGRESS, TEMPORARY_ERROR_REPLY, buildIncidentSystem, isNegativeFeedback, welcomeMessage,
 } from "./prompts.ts";
 import { parseProviderReply, type ProviderChannels } from "./provider.ts";
-import { loadHistory, sendTraveler, targetFromIncident, targetFromInbound, type TravelerTarget } from "./reply.ts";
+import { loadHistory, persistOutbound, sendTraveler, targetFromIncident, targetFromInbound, type TravelerTarget } from "./reply.ts";
 import { escalateWithNotice, runProtocol, startProtocol, type RunnerDeps } from "./runner.ts";
 import { INACTIVITY_MS, claimWait, findOrCreateIncident, logAction, recordKpi, saveIncident } from "./store.ts";
 
@@ -34,7 +35,6 @@ export interface IncidentsAgentDeps {
 
 const MAX_ID_ATTEMPTS = 3;
 const FEEDBACK_MAX = 1000;
-const norm = (s: string) => s.normalize("NFD").replace(/\p{M}/gu, "").toLowerCase();
 
 export function surnameMatches(fullName: string, text: string): boolean {
   const surnames = norm(fullName).split(/[^a-z]+/).filter(Boolean).slice(1).filter((t) => t.length >= 3);
@@ -42,51 +42,8 @@ export function surnameMatches(fullName: string, text: string): boolean {
   return surnames.some((s) => words.has(s));
 }
 
-// Guardarraíl de privacidad: al LLM (y a la búsqueda KB) no llegan email, teléfono, código de reserva,
-// nombre del viajero ni nombre/referencia del proveedor, aunque aparezcan en el historial (los escribió
-// el viajero o están en mensajes salientes de protocolos anteriores).
-const EMAIL_RE = /[^\s@<>()]+@[^\s@<>()]+\.[^\s@<>()]+/g;
-// Secuencia de dígitos completa: no empieza ni acaba pegada a otro dígito ni dentro de una hora
-// ("10:30"); un ":" que no esté entre dígitos ("Tel:600111222", "600111222: llámame") no la protege.
-const PHONE_RE = /(?<!\d|\d:)\+?\d(?:[\s().-]?\d){6,16}(?!\d|:\d)/g;
-// Forma de BOOKING_CODE, con y sin guion (BX-1001, BX1001).
-const CODE_RE = /(?<![\p{L}\p{N}])[a-z]{2,4}-?\d{4,8}(?![\p{L}\p{N}])/giu;
-const MIN_TOKEN = 3;
-// Partículas de nombres compuestos: solas no identifican a nadie y son palabras comunes del texto.
-const NAME_PARTICLES = new Set(["del", "las", "los", "dos", "das", "van", "von", "der", "den", "des", "die"]);
-const ACCENTS: Record<string, string> = { a: "aáàâäã", e: "eéèêë", i: "iíìîï", o: "oóòôöõ", u: "uúùûü", n: "nñ", c: "cç" };
-
-// Término literal con fronteras de palabra Unicode, insensible a mayúsculas y acentos.
-function termRe(term: string): RegExp {
-  const body = [...norm(term)].map((ch) =>
-    ACCENTS[ch] ? `[${ACCENTS[ch]}]` : /\s/.test(ch) ? "\\s+" : ch.replace(/[.*+?^${}()|[\]\\/]/g, "\\$&"),
-  ).join("");
-  return new RegExp(`(?<![\\p{L}\\p{N}])${body}(?![\\p{L}\\p{N}])`, "giu");
-}
-
-export function redactForLlm(text: string, b: { codigo: string; viajero_nombre?: string | null; servicios: unknown }): string {
-  const servicios = (Array.isArray(b.servicios) ? b.servicios : []) as BookingService[];
-  const long = (x: unknown): x is string => typeof x === "string" && x.trim().length >= MIN_TOKEN;
-  // Primero email y teléfono: ningún reemplazo posterior puede partir una secuencia de dígitos.
-  let out = text.replace(EMAIL_RE, "[email]");
-  // Teléfono: con prefijo + o con al menos 9 dígitos (no tapa horas, fechas ni importes cortos).
-  out = out.replace(PHONE_RE, (m) => (m.startsWith("+") || m.replace(/\D/g, "").length >= 9 ? "[telefono]" : m));
-  out = out.replace(CODE_RE, "[reserva]");
-  for (const c of [b.codigo, b.codigo.replace(/-/g, "")].filter(long)) out = out.replace(termRe(c.trim()), "[reserva]");
-  for (const s of servicios) {
-    if (long(s.proveedor)) out = out.replace(termRe(s.proveedor.trim()), "[proveedor]");
-    if (long(s.referencia)) out = out.replace(termRe(s.referencia.trim()), "[referencia]");
-  }
-  for (const t of (b.viajero_nombre ?? "").split(/[^\p{L}]+/u)
-    .filter((x) => x.length >= MIN_TOKEN && !NAME_PARTICLES.has(norm(x)))) {
-    out = out.replace(termRe(t), "[nombre]");
-  }
-  return out;
-}
-
-// Al escalar por un fallo inesperado, el protocolo (si lo hay) queda terminado en la misma escritura.
-const markTerminated: EscalationExtra = (c) =>
-  c.protocolo_estado ? { protocolo_estado: { ...c.protocolo_estado, terminado: true } } : {};
+// El guardarraíl de privacidad vive en ./redact.ts (lo usan también la respuesta del proveedor).
+export { redactForLlm } from "./redact.ts";
 
 // Lo que el manejador sabe en cada momento, para que la recuperación no deje nada colgado.
 interface Progress { incidentId: string | null; target: TravelerTarget | null; conversationId: string; channel: Channel }
@@ -99,7 +56,11 @@ export function createIncidentsAgent(deps: IncidentsAgentDeps): Dispatch {
   const { db } = deps;
 
   async function onProviderReply(incidentId: string, text: string): Promise<void> {
-    const reply = await parseProviderReply(deps.llm, text);
+    const [current] = await db.select().from(incident).where(eq(incident.id, incidentId));
+    if (!current) return;
+    // Lo que va al LLM se redacta con los datos de la reserva de la incidencia (viajero, código, proveedor).
+    const [b] = await db.select().from(booking).where(eq(booking.id, current.booking_id));
+    const reply = await parseProviderReply(deps.llm, text, (t) => redactForLlm(t, b ?? { codigo: "", servicios: [] }));
     await logAction(db, incidentId, "mensaje_proveedor", { direccion: "in", lectura: reply.tipo });
     if (reply.tipo === "desconocido") return;
     // Solo quien reclama la espera avanza el protocolo: una respuesta duplicada o tardía no tiene efectos.
@@ -109,6 +70,27 @@ export function createIncidentsAgent(deps: IncidentsAgentDeps): Dispatch {
     await runProtocol(rd, inc, { tipo: "respuesta_proveedor", eta_min: reply.tipo === "eta" ? reply.minutos : null });
   }
 
+  // El remitente es proveedor pero no de una única incidencia en protocolo. Nunca se avanza un
+  // protocolo con su respuesta ni se le contesta, y no se llama al LLM.
+  async function onProviderOther(other: NonNullable<RouteDecision["providerOther"]>): Promise<void> {
+    for (const id of other.incidentIds) {
+      try {
+        const [row] = await db.select().from(incident).where(eq(incident.id, id));
+        if (!row) continue;
+        if (other.motivo === "fuera_de_protocolo") {
+          await recordKpi(db, "mensaje_proveedor_descartado", { ref_id: id, datos: { estado: row.estado } });
+          continue;
+        }
+        // Ambiguo (P37): no se sabe a qué viajero responde. Cada incidencia escala por su cuenta; solo la
+        // llamada que gana el escalado avisa a su viajero, así no hay avisos dobles.
+        await logAction(db, id, "mensaje_proveedor", { direccion: "in", lectura: "ambiguo" });
+        await escalateWithNotice(rd, row, "proveedor_ambiguo", await targetFromIncident(db, row), markTerminated);
+      } catch (err) {
+        console.error("incidencias: respuesta de proveedor sin incidencia única", (err as Error).name);
+      }
+    }
+  }
+
   async function handle(
     msg: InboundMessage, ing: IngestResult, decision: RouteDecision & { bookingId: string }, p: Progress,
   ): Promise<void> {
@@ -116,6 +98,7 @@ export function createIncidentsAgent(deps: IncidentsAgentDeps): Dispatch {
       p.incidentId = decision.providerIncidentId; // el viajero se resuelve desde la incidencia si hay que recuperar
       return onProviderReply(decision.providerIncidentId, msg.text);
     }
+    if (decision.providerOther) return onProviderOther(decision.providerOther);
 
     const t = targetFromInbound(msg, ing.conversationId);
     p.target = t;
@@ -201,6 +184,8 @@ export function createIncidentsAgent(deps: IncidentsAgentDeps): Dispatch {
     } catch (err) {
       console.error("incidencias: búsqueda KB fallida", (err as Error).name);
     }
+    // Sin artículos no hay con qué responder: no se llama al LLM (inventaría o prometería contacto).
+    if (hits.length === 0) { await escalateWithNotice(rd, inc, "sin_kb", t); return; }
     const reply = await deps.llm.converse({ system: buildIncidentSystem(hits, b.destino), messages: toMessageParams(history) });
     if (!reply.ok || !reply.value.trim()) { await escalateWithNotice(rd, inc, "llm_fallido", t); return; }
     await say(reply.value);
@@ -218,11 +203,15 @@ export function createIncidentsAgent(deps: IncidentsAgentDeps): Dispatch {
     }).catch((e: Error) => console.error("incidencias: KPI de error fallido", e.name));
     const sendRaw = async (text: string) => {
       if (!p.target) return;
+      let externalId: string;
       try {
-        await deps.send({ channel: p.target.channel, to: p.target.to, text, subject: p.target.subject });
+        ({ externalId } = await deps.send({ channel: p.target.channel, to: p.target.to, text, subject: p.target.subject }));
       } catch (e) {
         console.error("incidencias: aviso de error fallido", (e as Error).name);
+        return;
       }
+      // Como sendTraveler: el saliente queda en la conversación (el widget web lee de aquí).
+      await persistOutbound(rd, p.conversationId, p.target.channel, text, externalId);
     };
     try {
       if (!p.incidentId) {

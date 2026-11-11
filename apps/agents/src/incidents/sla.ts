@@ -1,7 +1,8 @@
 import { and, eq, inArray, isNotNull, lt, lte } from "drizzle-orm";
 import type { Db } from "../db/index.ts";
 import { incident } from "../db/schema.ts";
-import { escalateIncidentResult } from "./escalate.ts";
+import type { IncidentState } from "../db/schema.ts";
+import { escalateIncidentResult, markTerminated } from "./escalate.ts";
 import { ESCALATED_REPLY } from "./prompts.ts";
 import { sendTraveler, targetFromIncident } from "./reply.ts";
 import { runProtocol, type RunnerDeps } from "./runner.ts";
@@ -34,16 +35,23 @@ export async function runDueTimers(deps: RunnerDeps): Promise<{ ran: number; fai
   return { ran, failed };
 }
 
+const SLA_STATES: IncidentState[] = ["clasificando", "protocolo"];
+
 // Escala primero (transición atómica) y solo la llamada ganadora registra el KPI y avisa al viajero.
 export async function escalateOverdue(deps: RunnerDeps): Promise<number> {
   const now = deps.now();
   const rows = await deps.db.select().from(incident).where(and(
-    inArray(incident.estado, ["clasificando", "protocolo"]), lt(incident.sla_vence, now), eq(incident.requiere_humano, false),
+    inArray(incident.estado, SLA_STATES), lt(incident.sla_vence, now), eq(incident.requiere_humano, false),
   ));
   let n = 0;
   for (const inc of rows) {
     try {
-      const { row, escalated } = await escalateIncidentResult(deps, inc, "sla");
+      // La condición se reevalúa sobre la fila vigente (también tras una carrera): si ya se atendió
+      // (conversacional/seguimiento) o el SLA dejó de estar vencido, no se escala.
+      const { row, escalated } = await escalateIncidentResult(deps, inc, "sla", markTerminated, {
+        check: (c) => SLA_STATES.includes(c.estado) && !!c.sla_vence && c.sla_vence.getTime() < now.getTime() && !c.requiere_humano,
+        where: and(inArray(incident.estado, SLA_STATES), lt(incident.sla_vence, now), eq(incident.requiere_humano, false))!,
+      });
       if (!escalated) continue;
       n++;
       try {
