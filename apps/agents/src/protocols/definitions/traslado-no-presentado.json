@@ -1,0 +1,23 @@
+{
+  "codigo": "traslado_no_presentado",
+  "nombre": "Traslado no presentado",
+  "inicio": "verificar",
+  "pasos": {
+    "verificar": { "tipo": "verificar_servicio", "si_ok": "contactar", "si_falla": "escalar" },
+    "contactar": { "tipo": "contactar_proveedor", "plantilla": "proveedor", "siguiente": "avisar" },
+    "avisar": { "tipo": "mensaje_viajero", "plantilla": "aviso", "siguiente": "esperar" },
+    "esperar": { "tipo": "esperar_respuesta", "minutos": 15, "max_eta_min": 30, "si_responde": "confirmar_eta", "si_vence": "autorizar" },
+    "confirmar_eta": { "tipo": "mensaje_viajero", "plantilla": "eta", "siguiente": "feedback" },
+    "autorizar": { "tipo": "autorizar_gasto", "concepto": "taxi", "siguiente": "confirmar_taxi" },
+    "confirmar_taxi": { "tipo": "mensaje_viajero", "plantilla": "taxi", "siguiente": "feedback" },
+    "feedback": { "tipo": "pedir_feedback", "plantilla": "feedback" },
+    "escalar": { "tipo": "escalar", "motivo": "servicio_no_verificable" }
+  },
+  "plantillas": {
+    "proveedor": "Hola {{proveedor}}: el viajero del servicio {{referencia}} espera su traslado en {{lugar}} ({{hora}} UTC) y no lo encuentra. ¿En cuántos minutos llegan? Respondan solo con los minutos, por favor.",
+    "aviso": "{{viajero}}, ya estamos contactando a {{proveedor}}. Te escribimos en un máximo de 15 minutos.",
+    "eta": "Buenas noticias: {{proveedor}} llega en unos {{eta}} minutos a {{lugar}}.",
+    "taxi": "{{proveedor}} no confirmó a tiempo. Toma un taxi oficial hasta tu hotel: te reembolsamos hasta {{monto}} {{moneda}}. Guarda el recibo.",
+    "feedback": "Cuando estés en el hotel, cuéntanos en una frase cómo fue todo."
+  }
+}
