@@ -1,20 +1,20 @@
 import { and, eq, isNull } from "drizzle-orm";
 import type { Db } from "../db/index.ts";
 import { booking, incident, type BookingService } from "../db/schema.ts";
-import type { ChannelAdapter, InboundMessage } from "../channels/types.ts";
+import type { Channel, ChannelAdapter, InboundMessage } from "../channels/types.ts";
 import type { IngestResult } from "../gateway/ingest.ts";
 import type { Turn } from "../leads/qualify.ts";
 import type { Llm } from "../llm/types.ts";
 import type { Mailer } from "../notify/mailer.ts";
-import { BOOKING_CODE, type RouteDecision } from "../orchestrator/route.ts";
+import type { RouteDecision } from "../orchestrator/route.ts";
 import type { KbHit, KnowledgeBase } from "../rag/kb.ts";
 import type { Dispatch } from "../server/pipeline.ts";
 import { toMessageParams } from "../leads/prompts.ts";
 import { classifyIncident, decideRoute, detectEmergency } from "./classify.ts";
-import { escalateIncidentResult, type EscalationExtra } from "./escalate.ts";
+import { escalateIncidentResult, renotifyOnCall, type EscalationExtra } from "./escalate.ts";
 import {
   ASK_NAME, EMERGENCY_REPLY, ESCALATED_REPLY, ESCALATED_WAIT, FEEDBACK_THANKS, IDENTIFIED_REPLY, NAME_MISMATCH,
-  PROTOCOL_IN_PROGRESS, buildIncidentSystem, isNegativeFeedback, welcomeMessage,
+  PROTOCOL_IN_PROGRESS, TEMPORARY_ERROR_REPLY, buildIncidentSystem, isNegativeFeedback, welcomeMessage,
 } from "./prompts.ts";
 import { parseProviderReply, type ProviderChannels } from "./provider.ts";
 import { loadHistory, sendTraveler, targetFromIncident, targetFromInbound, type TravelerTarget } from "./reply.ts";
@@ -42,23 +42,42 @@ export function surnameMatches(fullName: string, text: string): boolean {
   return surnames.some((s) => words.has(s));
 }
 
-// Guardarraíl de privacidad: al LLM (y a la búsqueda KB) no llegan email, teléfono, código de reserva
-// ni nombre/referencia del proveedor, aunque aparezcan en el historial (los escribió el viajero o
-// están en mensajes salientes de protocolos anteriores).
+// Guardarraíl de privacidad: al LLM (y a la búsqueda KB) no llegan email, teléfono, código de reserva,
+// nombre del viajero ni nombre/referencia del proveedor, aunque aparezcan en el historial (los escribió
+// el viajero o están en mensajes salientes de protocolos anteriores).
 const EMAIL_RE = /[^\s@<>()]+@[^\s@<>()]+\.[^\s@<>()]+/g;
-const PHONE_RE = /\+?\d(?:[\s().-]?\d){6,16}/g;
-const CODE_RE = new RegExp(BOOKING_CODE.source, "gi");
-const escapeRe = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+// Secuencia de dígitos completa: no empieza ni acaba pegada a otro dígito ni al ":" de una hora.
+const PHONE_RE = /(?<![\d:])\+?\d(?:[\s().-]?\d){6,16}(?![\d:])/g;
+// Forma de BOOKING_CODE, con y sin guion (BX-1001, BX1001).
+const CODE_RE = /(?<![\p{L}\p{N}])[a-z]{2,4}-?\d{4,8}(?![\p{L}\p{N}])/giu;
+const MIN_TOKEN = 3;
+const ACCENTS: Record<string, string> = { a: "aáàâäã", e: "eéèêë", i: "iíìîï", o: "oóòôöõ", u: "uúùûü", n: "nñ", c: "cç" };
 
-export function redactForLlm(text: string, b: { codigo: string; servicios: unknown }): string {
+// Término literal con fronteras de palabra Unicode, insensible a mayúsculas y acentos.
+function termRe(term: string): RegExp {
+  const body = [...norm(term)].map((ch) =>
+    ACCENTS[ch] ? `[${ACCENTS[ch]}]` : /\s/.test(ch) ? "\\s+" : ch.replace(/[.*+?^${}()|[\]\\/]/g, "\\$&"),
+  ).join("");
+  return new RegExp(`(?<![\\p{L}\\p{N}])${body}(?![\\p{L}\\p{N}])`, "giu");
+}
+
+export function redactForLlm(text: string, b: { codigo: string; viajero_nombre?: string | null; servicios: unknown }): string {
   const servicios = (Array.isArray(b.servicios) ? b.servicios : []) as BookingService[];
-  const names = [b.codigo, ...servicios.flatMap((s) => [s.proveedor, s.referencia])]
-    .filter((x): x is string => typeof x === "string" && x.trim().length >= 2);
+  const long = (x: unknown): x is string => typeof x === "string" && x.trim().length >= MIN_TOKEN;
+  // Primero email y teléfono: ningún reemplazo posterior puede partir una secuencia de dígitos.
   let out = text.replace(EMAIL_RE, "[email]");
-  for (const n of names) out = out.replace(new RegExp(escapeRe(n.trim()), "gi"), "[dato]");
+  // Teléfono: con prefijo + o con al menos 9 dígitos (no tapa horas, fechas ni importes cortos).
+  out = out.replace(PHONE_RE, (m) => (m.startsWith("+") || m.replace(/\D/g, "").length >= 9 ? "[telefono]" : m));
   out = out.replace(CODE_RE, "[reserva]");
-  // Teléfono: con prefijo + o al menos 9 dígitos (no tapa horas ni importes cortos).
-  return out.replace(PHONE_RE, (m) => (m.startsWith("+") || m.replace(/\D/g, "").length >= 9 ? "[telefono]" : m));
+  for (const c of [b.codigo, b.codigo.replace(/-/g, "")].filter(long)) out = out.replace(termRe(c.trim()), "[reserva]");
+  for (const s of servicios) {
+    if (long(s.proveedor)) out = out.replace(termRe(s.proveedor.trim()), "[proveedor]");
+    if (long(s.referencia)) out = out.replace(termRe(s.referencia.trim()), "[referencia]");
+  }
+  for (const t of (b.viajero_nombre ?? "").split(/[^\p{L}]+/u).filter((x) => x.length >= MIN_TOKEN)) {
+    out = out.replace(termRe(t), "[nombre]");
+  }
+  return out;
 }
 
 // Al escalar por un fallo inesperado, el protocolo (si lo hay) queda terminado en la misma escritura.
@@ -66,7 +85,7 @@ const markTerminated: EscalationExtra = (c) =>
   c.protocolo_estado ? { protocolo_estado: { ...c.protocolo_estado, terminado: true } } : {};
 
 // Lo que el manejador sabe en cada momento, para que la recuperación no deje nada colgado.
-interface Progress { incidentId: string | null; target: TravelerTarget | null }
+interface Progress { incidentId: string | null; target: TravelerTarget | null; conversationId: string; channel: Channel }
 
 export function createIncidentsAgent(deps: IncidentsAgentDeps): Dispatch {
   const now = deps.now ?? (() => new Date());
@@ -105,9 +124,15 @@ export function createIncidentsAgent(deps: IncidentsAgentDeps): Dispatch {
     // Emergencia: antes de cualquier LLM e incluso sin identificar. EMERGENCY_REPLY sustituye al aviso de escalado.
     if (detectEmergency(msg.text)) {
       await say(EMERGENCY_REPLY);
-      await escalateIncidentResult(rd, inc, "emergencia", (c) => ({
+      const { row, escalated } = await escalateIncidentResult(rd, inc, "emergencia", (c) => ({
         ...markTerminated(c), tipologia: "emergencia", urgencia: "critica",
       }));
+      // Ya estaba escalada (p. ej. por llm_fallido): se marca la emergencia y se vuelve a avisar a la
+      // guardia, porque EMERGENCY_REPLY le promete al viajero que el equipo ya está avisado.
+      if (!escalated && row.estado === "escalado") {
+        const tagged = await saveIncident(db, row, { tipologia: "emergencia", urgencia: "critica", requiere_humano: true }, now());
+        await renotifyOnCall(rd, tagged, "emergencia");
+      }
       return;
     }
     if (inc.estado === "escalado") { await say(ESCALATED_WAIT); return; }
@@ -181,37 +206,54 @@ export function createIncidentsAgent(deps: IncidentsAgentDeps): Dispatch {
   // Ante un error inesperado nada queda colgado (incluida una incidencia en "protocolo" sin temporizador
   // porque runProtocol lanzó tras el commit de startProtocol): aviso al viajero, escalado y, si el
   // escalado también falla, requiere_humano. Solo se registra err.name.
-  async function recover(p: Progress): Promise<void> {
+  // Primero se escala y solo después se avisa: el aviso sale únicamente si ESTA llamada escaló (o si,
+  // fallido el escalado, quedó marcado requiere_humano), así una carrera no produce avisos dobles.
+  async function recover(p: Progress, err: Error): Promise<void> {
+    const alert = (fase: string) => recordKpi(db, "error_agente", {
+      ref_id: p.incidentId ?? p.conversationId, canal: p.channel, datos: { fase, error: err.name },
+    }).catch((e: Error) => console.error("incidencias: KPI de error fallido", e.name));
+    const sendRaw = async (text: string) => {
+      if (!p.target) return;
+      try {
+        await deps.send({ channel: p.target.channel, to: p.target.to, text, subject: p.target.subject });
+      } catch (e) {
+        console.error("incidencias: aviso de error fallido", (e as Error).name);
+      }
+    };
     try {
       if (!p.incidentId) {
-        if (p.target) {
-          await deps.send({ channel: p.target.channel, to: p.target.to, text: ESCALATED_REPLY, subject: p.target.subject });
-        }
+        // Sin incidencia no hay a quién escalar: no se promete una persona; se pide reintentar.
+        await alert("sin_incidencia");
+        await sendRaw(TEMPORARY_ERROR_REPLY);
         return;
       }
+      await alert("con_incidencia");
       const [fresh] = await db.select().from(incident).where(eq(incident.id, p.incidentId));
       if (!fresh || fresh.estado === "escalado" || fresh.estado === "cerrado") return;
+      let handedOff: boolean;
+      try {
+        handedOff = (await escalateIncidentResult(rd, fresh, "error_interno", markTerminated)).escalated;
+      } catch (e) {
+        console.error("incidencias: escalado de recuperación fallido", (e as Error).name);
+        await db.update(incident).set({ requiere_humano: true }).where(eq(incident.id, fresh.id));
+        handedOff = true;
+      }
+      if (!handedOff) return;
       const t = p.target ?? (await targetFromIncident(db, fresh));
       if (t) await sendTraveler(rd, t, fresh.id, ESCALATED_REPLY);
-      try {
-        await escalateIncidentResult(rd, fresh, "error_interno", markTerminated);
-      } catch (err) {
-        console.error("incidencias: escalado de recuperación fallido", (err as Error).name);
-        await db.update(incident).set({ requiere_humano: true }).where(eq(incident.id, fresh.id));
-      }
-    } catch (err) {
-      console.error("incidencias: recuperación fallida", (err as Error).name);
+    } catch (e) {
+      console.error("incidencias: recuperación fallida", (e as Error).name);
     }
   }
 
   return async ({ msg, ingest, decision }) => {
     if (decision.agent !== "incidents" || !decision.bookingId) return;
-    const progress: Progress = { incidentId: null, target: null };
+    const progress: Progress = { incidentId: null, target: null, conversationId: ingest.conversationId, channel: msg.channel };
     try {
       await handle(msg, ingest, { ...decision, bookingId: decision.bookingId }, progress);
     } catch (err) {
       console.error("incidencias: fallo del agente", (err as Error).name);
-      await recover(progress);
+      await recover(progress, err as Error);
     }
   };
 }

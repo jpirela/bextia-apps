@@ -1,11 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createTestDb } from "../db/test-db.ts";
 import type { Db } from "../db/index.ts";
-import { booking, incident, incident_action, on_call } from "../db/schema.ts";
+import { booking, incident, incident_action, kpi_event, on_call } from "../db/schema.ts";
 import type { InboundMessage, OutboundMessage } from "../channels/types.ts";
 import { ingest } from "../gateway/ingest.ts";
 import { createScriptedLlm } from "../llm/scripted.ts";
 import type { LlmResult } from "../llm/types.ts";
+import type { Mailer } from "../notify/mailer.ts";
 import { createStaticKb } from "../rag/kb.ts";
 import { createRateLimiter } from "../server/rate-limit.ts";
 import { createPipeline } from "../server/pipeline.ts";
@@ -13,7 +14,8 @@ import { seedProtocol } from "../protocols/seed.ts";
 import { createIncidentsAgent, redactForLlm, surnameMatches } from "./agent.ts";
 import type { IncidentClass } from "./classify.ts";
 import {
-  ASK_NAME, EMERGENCY_REPLY, ESCALATED_REPLY, ESCALATED_WAIT, FEEDBACK_THANKS, NAME_MISMATCH, PROTOCOL_IN_PROGRESS, welcomeMessage,
+  ASK_NAME, EMERGENCY_REPLY, ESCALATED_REPLY, ESCALATED_WAIT, FEEDBACK_THANKS, NAME_MISMATCH, PROTOCOL_IN_PROGRESS,
+  TEMPORARY_ERROR_REPLY, welcomeMessage,
 } from "./prompts.ts";
 
 let db: Db;
@@ -30,19 +32,19 @@ const cls = (over: Partial<IncidentClass> = {}): LlmResult<unknown> => ({
   value: { tipologia: "traslado_no_presentado", urgencia: "alta", emocional: false, impacto_economico_alto: false, idioma: "es", resumen: "No llegó el traslado.", ...over },
 });
 
-// BD que falla al registrar la acción "decision" (primer efecto del runner tras el commit de startProtocol).
-function failingDecisionLog(real: Db): Db {
+// BD que falla al insertar en `table` las filas que cumplan `when`.
+const failingInsert = (table: unknown, when: (v: Record<string, unknown>) => boolean) => (real: Db): Db => {
   return new Proxy(real, {
     get(target, prop) {
       if (prop === "insert") {
-        return (table: unknown) => {
-          const builder = (target.insert as (t: unknown) => { values: (v: unknown) => unknown })(table);
-          if (table !== incident_action) return builder;
+        return (t: unknown) => {
+          const builder = (target.insert as (t: unknown) => { values: (v: unknown) => unknown })(t);
+          if (t !== table) return builder;
           return new Proxy(builder, {
             get(b, p) {
               if (p === "values") {
-                return (v: { tipo?: string }) => {
-                  if (v.tipo === "decision") throw new TypeError("fallo simulado");
+                return (v: Record<string, unknown>) => {
+                  if (when(v)) throw new TypeError("fallo simulado");
                   return b.values(v);
                 };
               }
@@ -56,9 +58,13 @@ function failingDecisionLog(real: Db): Db {
       return typeof val === "function" ? val.bind(target) : val;
     },
   });
-}
+};
+// Falla el logAction("decision"): primer efecto del runner tras el commit de startProtocol.
+const failingDecisionLog = failingInsert(incident_action, (v) => v.tipo === "decision");
+// Falla la creación de la incidencia: error antes de que exista.
+const failingIncidentCreate = failingInsert(incident, () => true);
 
-async function setup(script: Parameters<typeof createScriptedLlm>[0] = {}, opts: { agentDb?: (db: Db) => Db } = {}) {
+async function setup(script: Parameters<typeof createScriptedLlm>[0] = {}, opts: { agentDb?: (db: Db) => Db; mailer?: Mailer } = {}) {
   now = new Date("2026-11-08T10:05:00Z");
   sent = [];
   await db.insert(booking).values({
@@ -70,7 +76,7 @@ async function setup(script: Parameters<typeof createScriptedLlm>[0] = {}, opts:
   await seedProtocol(db, { tope: 40, moneda: "EUR" });
   const llm = createScriptedLlm(script);
   const agent = createIncidentsAgent({
-    db: opts.agentDb ? opts.agentDb(db) : db, llm, mailer: null, now: () => now, providerChannels: { whatsapp: false, email: false, sim: true },
+    db: opts.agentDb ? opts.agentDb(db) : db, llm, mailer: opts.mailer ?? null, now: () => now, providerChannels: { whatsapp: false, email: false, sim: true },
     kb: createStaticKb([{ id: "k1", titulo: "Check-in del hotel", contenido: "Desde las 15:00.", similarity: 0.9 }]),
     send: async (m) => { sent.push(m); return { externalId: "" }; },
   });
@@ -101,6 +107,17 @@ describe("redactForLlm", () => {
     expect(out).toContain("15:00");
     expect(out).toContain("20 min");
   });
+
+  // Sondas de la revisión: proveedor "Sol", referencia "12".
+  const sol = { codigo: "BX-1001", viajero_nombre: "Ana García López", servicios: [{ tipo: "traslado", proveedor: "Sol", referencia: "12" }] };
+  it.each([
+    ["Soledad", "Soledad"], // "Sol" solo como palabra completa
+    ["Llámame al 600111222", "Llámame al [telefono]"], // el teléfono se tapa entero, sin filtrar dígitos
+    ["Mi reserva es BX1001", "Mi reserva es [reserva]"], // código sin guion
+    ["Llegué el 2026-11-08 10:30", "Llegué el 2026-11-08 10:30"], // fecha y hora intactas
+    ["Me recoge Sol en la terminal 12", "Me recoge [proveedor] en la terminal 12"], // referencia < 3 caracteres: no se toca
+    ["Soy ana, de apellido garcia lopez", "Soy [nombre], de apellido [nombre] [nombre]"], // nombre del viajero, sin acentos ni mayúsculas
+  ])("%s → %s", (input, expected) => expect(redactForLlm(input, sol)).toBe(expected));
 });
 
 describe("Agente 2", () => {
@@ -250,6 +267,42 @@ describe("Agente 2", () => {
     const { say } = await setup({ classify: [{ ok: false, reason: "invalid_output", detail: "x" }] });
     await say("ana@example.com", "Tengo un problema");
     expect(await inc()).toMatchObject({ estado: "escalado" });
+    const esc = (await db.select().from(incident_action)).find((a) => a.tipo === "escalado");
+    expect(esc?.detalle).toMatchObject({ motivo: "clasificacion_fallida" });
+  });
+
+  it("emergencia sobre una incidencia ya escalada → la marca y vuelve a avisar a la guardia", async () => {
+    const mails: Array<{ to: string; subject: string }> = [];
+    const mailer: Mailer = { send: async (m) => { mails.push({ to: m.to, subject: m.subject }); return { messageId: "x" }; } };
+    const { say, llm } = await setup({
+      classify: [cls({ tipologia: "consulta", urgencia: "baja" })],
+      converse: [{ ok: false, reason: "api_error", detail: "x" }],
+    }, { mailer });
+    await say("ana@example.com", "¿Hay wifi en el hotel?");
+    expect(await inc()).toMatchObject({ estado: "escalado", urgencia: "baja" });
+    await say("ana@example.com", "Mi hijo está sangrando mucho");
+    expect(to("ana@example.com").at(-1)).toBe(EMERGENCY_REPLY);
+    expect(await inc()).toMatchObject({ estado: "escalado", tipologia: "emergencia", urgencia: "critica", requiere_humano: true });
+    const motivos = (await db.select().from(incident_action)).filter((a) => a.tipo === "escalado").map((a) => a.detalle);
+    expect(motivos).toEqual([
+      expect.objectContaining({ motivo: "llm_fallido" }),
+      expect.objectContaining({ motivo: "emergencia", reaviso: true }),
+    ]);
+    const kpis = (await db.select().from(kpi_event)).filter((k) => k.tipo === "incidencia_escalada").map((k) => k.datos);
+    expect(kpis).toContainEqual(expect.objectContaining({ motivo: "emergencia" }));
+    expect(mails.map((m) => m.subject)).toEqual(["[BEXTIA] Incidencia escalada (llm_fallido)", "[BEXTIA] Incidencia escalada (emergencia)"]);
+    expect(llm.calls.classify).toHaveLength(1);
+  });
+
+  it("error antes de crear la incidencia → no promete una persona y deja un KPI sin PII", async () => {
+    const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+    const { say } = await setup({}, { agentDb: failingIncidentCreate });
+    await say("ana@example.com", "El traslado no ha llegado");
+    expect(to("ana@example.com")).toEqual([TEMPORARY_ERROR_REPLY]);
+    expect(await db.select().from(incident)).toHaveLength(0);
+    const k = (await db.select().from(kpi_event)).find((e) => e.tipo === "error_agente");
+    expect(k?.datos).toEqual({ fase: "sin_incidencia", error: "TypeError" });
+    for (const call of errors.mock.calls) expect(JSON.stringify(call)).not.toMatch(/ana@example\.com|traslado|fallo simulado/);
   });
 
   it("runProtocol lanza tras el commit de startProtocol → aviso, escalado y protocolo terminado (M3)", async () => {
@@ -267,6 +320,15 @@ describe("Agente 2", () => {
     for (const call of errors.mock.calls) {
       expect(JSON.stringify(call)).not.toMatch(/ana@example\.com|BX-1001|fallo simulado/);
     }
+  });
+
+  it("recuperación: si el escalado lanza, marca requiere_humano y avisa una sola vez (M2)", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    const failBoth = failingInsert(incident_action, (v) => v.tipo === "decision" || v.tipo === "escalado");
+    const { say } = await setup({ classify: [cls()] }, { agentDb: failBoth });
+    await say("ana@example.com", "El traslado no ha llegado");
+    expect(await inc()).toMatchObject({ requiere_humano: true });
+    expect(to("ana@example.com").filter((t) => t === ESCALATED_REPLY)).toHaveLength(1);
   });
 
   it("un error inesperado nunca se propaga al canal", async () => {

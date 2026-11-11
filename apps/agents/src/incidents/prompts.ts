@@ -7,6 +7,8 @@ export const EMERGENCY_REPLY =
   "Si hay riesgo para tu salud o tu seguridad, llama ahora al 112 (o al número de emergencias local). Ya avisamos a nuestro equipo de guardia, que te contactará de inmediato.";
 export const ESCALATED_REPLY = "Hemos pasado tu caso a una persona de nuestro equipo de guardia, que te escribirá en breve.";
 export const ESCALATED_WAIT = "Tu caso ya está con nuestro equipo de guardia. Te escribirán en breve.";
+// Error antes de existir la incidencia: no hay escalado, así que no se promete una persona.
+export const TEMPORARY_ERROR_REPLY = "Ahora mismo no hemos podido procesar tu mensaje. Por favor, vuelve a escribirnos en unos minutos.";
 export const PROTOCOL_IN_PROGRESS = "Seguimos gestionando tu caso con el proveedor. Te escribimos en cuanto tengamos novedades.";
 export const FEEDBACK_THANKS = "¡Gracias por contarnos! Cerramos el caso. Si necesitas algo más, escríbenos cuando quieras.";
 

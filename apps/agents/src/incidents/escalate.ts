@@ -56,15 +56,29 @@ export async function escalateIncidentResult(
   const guard = await pickOnCall(deps.db);
   const { row, won } = await saveEscalated(deps.db, inc, guard?.email ?? null, now, extra);
   if (!won) return { row, escalated: false };
-  const done = { row, escalated: true };
   await logAction(deps.db, inc.id, "escalado", { motivo, guardia: guard?.email ?? null });
   await recordKpi(deps.db, "incidencia_escalada", { ref_id: inc.id, datos: { motivo } });
+  await notifyGuard(deps, row, motivo, guard);
+  return { row, escalated: true };
+}
 
-  const failed = (m: "sin_guardia" | "sin_smtp" | "envio") => recordKpi(deps.db, "aviso_guardia_fallido", { ref_id: inc.id, datos: { motivo: m } });
-  if (!guard) { await failed("sin_guardia"); return done; }
-  if (!deps.mailer) { await failed("sin_smtp"); return done; }
-  const [b] = await deps.db.select({ codigo: booking.codigo }).from(booking).where(eq(booking.id, inc.booking_id));
-  const link = deps.backofficeUrl ? `${deps.backofficeUrl.replace(/\/+$/, "")}/incidencias/${inc.id}` : `Incidencia ${inc.id}`;
+// Re-aviso a la guardia sobre una incidencia que YA está escalada (p. ej. llega una emergencia
+// después de un escalado por llm_fallido): deja acción y KPI con el motivo nuevo y vuelve a avisar.
+export async function renotifyOnCall(deps: EscalationDeps, row: IncidentRow, motivo: string): Promise<void> {
+  const guard = await pickOnCall(deps.db);
+  await logAction(deps.db, row.id, "escalado", { motivo, guardia: guard?.email ?? null, reaviso: true });
+  await recordKpi(deps.db, "incidencia_escalada", { ref_id: row.id, datos: { motivo, reaviso: true } });
+  await notifyGuard(deps, row, motivo, guard);
+}
+
+async function notifyGuard(
+  deps: EscalationDeps, row: IncidentRow, motivo: string, guard: typeof on_call.$inferSelect | null,
+): Promise<void> {
+  const failed = (m: "sin_guardia" | "sin_smtp" | "envio") => recordKpi(deps.db, "aviso_guardia_fallido", { ref_id: row.id, datos: { motivo: m } });
+  if (!guard) { await failed("sin_guardia"); return; }
+  if (!deps.mailer) { await failed("sin_smtp"); return; }
+  const [b] = await deps.db.select({ codigo: booking.codigo }).from(booking).where(eq(booking.id, row.booking_id));
+  const link = deps.backofficeUrl ? `${deps.backofficeUrl.replace(/\/+$/, "")}/incidencias/${row.id}` : `Incidencia ${row.id}`;
   try {
     await deps.mailer.send({
       to: guard.email,
@@ -83,5 +97,4 @@ export async function escalateIncidentResult(
     console.error("escalado: aviso a guardia fallido", (err as Error).name);
     await failed("envio");
   }
-  return done;
 }
