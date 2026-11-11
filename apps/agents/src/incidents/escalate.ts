@@ -38,17 +38,26 @@ async function saveEscalated(
 }
 
 export async function escalateIncident(deps: EscalationDeps, inc: IncidentRow, motivo: string): Promise<IncidentRow> {
-  if (inc.estado === "escalado" || inc.estado === "cerrado") return inc;
+  return (await escalateIncidentResult(deps, inc, motivo)).row;
+}
+
+// Igual que escalateIncident, pero indica si esta llamada fue la que escaló (la ganadora).
+// Permite a quien llama avisar al viajero una sola vez.
+export async function escalateIncidentResult(
+  deps: EscalationDeps, inc: IncidentRow, motivo: string,
+): Promise<{ row: IncidentRow; escalated: boolean }> {
+  if (inc.estado === "escalado" || inc.estado === "cerrado") return { row: inc, escalated: false };
   const now = deps.now?.() ?? new Date();
   const guard = await pickOnCall(deps.db);
   const { row, won } = await saveEscalated(deps.db, inc, guard?.email ?? null, now);
-  if (!won) return row;
+  if (!won) return { row, escalated: false };
+  const done = { row, escalated: true };
   await logAction(deps.db, inc.id, "escalado", { motivo, guardia: guard?.email ?? null });
   await recordKpi(deps.db, "incidencia_escalada", { ref_id: inc.id, datos: { motivo } });
 
   const failed = (m: "sin_guardia" | "sin_smtp" | "envio") => recordKpi(deps.db, "aviso_guardia_fallido", { ref_id: inc.id, datos: { motivo: m } });
-  if (!guard) { await failed("sin_guardia"); return row; }
-  if (!deps.mailer) { await failed("sin_smtp"); return row; }
+  if (!guard) { await failed("sin_guardia"); return done; }
+  if (!deps.mailer) { await failed("sin_smtp"); return done; }
   const [b] = await deps.db.select({ codigo: booking.codigo }).from(booking).where(eq(booking.id, inc.booking_id));
   const link = deps.backofficeUrl ? `${deps.backofficeUrl.replace(/\/+$/, "")}/incidencias/${inc.id}` : `Incidencia ${inc.id}`;
   try {
@@ -69,5 +78,5 @@ export async function escalateIncident(deps: EscalationDeps, inc: IncidentRow, m
     console.error("escalado: aviso a guardia fallido", (err as Error).name);
     await failed("envio");
   }
-  return row;
+  return done;
 }
