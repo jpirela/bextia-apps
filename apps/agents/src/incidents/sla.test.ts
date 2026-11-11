@@ -19,18 +19,18 @@ const deps = (now: Date): RunnerDeps => ({
   send: async (m) => { sent.push(m); return { externalId: "" }; },
 });
 
-async function seed(estado: "clasificando" | "conversacional" = "clasificando") {
-  sent = [];
-  const [c] = await db.insert(contact).values({ email: "ana@example.com" }).returning();
+async function seed(estado: "clasificando" | "conversacional" = "clasificando", n = 1) {
+  if (n === 1) sent = [];
+  const [c] = await db.insert(contact).values({ email: n === 1 ? "ana@example.com" : `viajero${n}@example.com` }).returning();
   const [conv] = await db.insert(conversation).values({ contact_id: c.id, canal: "sim" }).returning();
   const [b] = await db.insert(booking).values({
-    codigo: "BX-1001", viajero_nombre: "Ana García", destino: "Lisboa",
+    codigo: `BX-${1000 + n}`, viajero_nombre: "Ana García", destino: "Lisboa",
     inicio: new Date("2026-11-07T00:00:00Z"), fin: new Date("2026-11-15T00:00:00Z"),
     servicios: [{ tipo: "traslado", proveedor: "TransLis", email: "ops@translis.test", lugar: "Aeropuerto LIS" }],
   }).returning();
-  await db.insert(on_call).values({ nombre: "Guardia", email: "guardia@bextia.test" });
+  if (n === 1) await db.insert(on_call).values({ nombre: "Guardia", email: "guardia@bextia.test" });
   const [inc] = await db.insert(incident).values({ booking_id: b.id, conversation_id: conv.id, contact_id: c.id, estado }).returning();
-  return { inc, t: { channel: "sim" as const, to: { email: "ana@example.com" }, conversationId: conv.id } };
+  return { inc, t: { channel: "sim" as const, to: { email: c.email! }, conversationId: conv.id } };
 }
 
 const row = async () => (await db.select().from(incident))[0];
@@ -59,19 +59,53 @@ describe("runDueTimers", () => {
     expect((await db.select().from(kpi_event)).filter((k) => k.tipo === "gasto_autorizado")).toHaveLength(1);
   });
 
-  it("un fallo en una incidencia no corta el resto y no registra PII", async () => {
+  // Falla UNA vez, justo al guardar el avance del protocolo (después de reclamar la espera).
+  const failingOnce = (now: Date): RunnerDeps => {
+    let armed = true;
+    return {
+      ...deps(now),
+      db: new Proxy(db, {
+        get: (o, p, r) => {
+          if (p !== "update") return Reflect.get(o, p, r);
+          return (tbl: never) => {
+            const b = (o.update as (t: never) => { set: (v: Record<string, unknown>) => unknown })(tbl);
+            return { set: (v: Record<string, unknown>) => {
+              if (armed && "protocolo_estado" in v) { armed = false; throw new RangeError("boom ana@example.com"); }
+              return b.set(v);
+            } };
+          };
+        },
+      }),
+    } as RunnerDeps;
+  };
+
+  it("si el avance falla tras reclamar, la espera vuelve y el siguiente barrido la procesa", async () => {
     await seedProtocol(db, { tope: 40, moneda: "EUR" });
     const { inc, t } = await seed();
     await startProtocol(deps(t0), inc, "traslado_no_presentado", t);
+    const wait = (await row()).proximo_paso_at;
     const later = new Date("2026-11-08T10:21:00Z");
-    const bad = {
-      ...deps(later),
-      db: new Proxy(db, { get: (o, p, r) => (p === "update" ? () => { throw new RangeError("boom ana@example.com"); } : Reflect.get(o, p, r)) }),
-    } as RunnerDeps;
     const spy = vi.spyOn(console, "error").mockImplementation(() => {});
-    expect(await runDueTimers(bad)).toEqual({ ran: 0, failed: 1 });
+    expect(await runDueTimers(failingOnce(later))).toEqual({ ran: 0, failed: 1 });
     expect(spy.mock.calls.flat().join(" ")).not.toContain("ana@example.com");
     spy.mockRestore();
+    expect((await row()).proximo_paso_at).toEqual(wait);
+    expect(await runDueTimers(deps(later))).toEqual({ ran: 1, failed: 0 });
+    expect((await row()).estado).toBe("seguimiento");
+  });
+
+  it("un fallo en una incidencia no corta el resto", async () => {
+    await seedProtocol(db, { tope: 40, moneda: "EUR" });
+    for (const n of [1, 2]) {
+      const { inc, t } = await seed("clasificando", n);
+      await startProtocol(deps(t0), inc, "traslado_no_presentado", t);
+    }
+    const later = new Date("2026-11-08T10:21:00Z");
+    const spy = vi.spyOn(console, "error").mockImplementation(() => {});
+    expect(await runDueTimers(failingOnce(later))).toEqual({ ran: 1, failed: 1 });
+    spy.mockRestore();
+    expect(await runDueTimers(deps(later))).toEqual({ ran: 1, failed: 0 });
+    expect((await db.select().from(incident)).map((i) => i.estado)).toEqual(["seguimiento", "seguimiento"]);
   });
 });
 

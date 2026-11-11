@@ -101,6 +101,19 @@ export async function recordKpi(
   });
 }
 
+// Devuelve la espera reclamada si el avance falló antes de cambiar el estado del protocolo:
+// solo actúa si nadie más la reprogramó ni avanzó el protocolo (mismo estado jsonb).
+export async function restoreWait(db: Db, inc: IncidentRow): Promise<boolean> {
+  if (!inc.proximo_paso_at) return false;
+  const rows = await db.update(incident).set({ proximo_paso_at: inc.proximo_paso_at }).where(and(
+    eq(incident.id, inc.id), eq(incident.estado, "protocolo"), isNull(incident.proximo_paso_at),
+    inc.protocolo_estado === null
+      ? isNull(incident.protocolo_estado)
+      : sql`${incident.protocolo_estado} = ${JSON.stringify(inc.protocolo_estado)}::jsonb`,
+  )).returning({ id: incident.id });
+  return rows.length === 1;
+}
+
 // Reclama la espera de un protocolo (respuesta del proveedor o vencimiento): solo un llamador gana.
 export async function claimWait(db: Db, id: string, dueBy?: Date): Promise<boolean> {
   const conds: SQL[] = [eq(incident.id, id), eq(incident.estado, "protocolo"), isNotNull(incident.proximo_paso_at)];

@@ -5,7 +5,7 @@ import { escalateIncidentResult } from "./escalate.ts";
 import { ESCALATED_REPLY } from "./prompts.ts";
 import { sendTraveler, targetFromIncident } from "./reply.ts";
 import { runProtocol, type RunnerDeps } from "./runner.ts";
-import { claimWait, recordKpi } from "./store.ts";
+import { claimWait, recordKpi, restoreWait } from "./store.ts";
 
 // Barrido de esperas vencidas: cada incidencia se reclama con claimWait (atómico) antes de avanzar,
 // de modo que dos barridos simultáneos (o la respuesta del proveedor) nunca duplican efectos.
@@ -16,13 +16,19 @@ export async function runDueTimers(deps: RunnerDeps): Promise<{ ran: number; fai
   let ran = 0;
   let failed = 0;
   for (const inc of due) {
+    let claimed = false;
     try {
       if (!(await claimWait(deps.db, inc.id, now))) continue; // la respuesta del proveedor o otro barrido llegó antes
+      claimed = true;
       await runProtocol(deps, { ...inc, proximo_paso_at: null }, { tipo: "vencimiento" });
       ran++;
     } catch (err) {
       failed++;
       console.error("incidencias: temporizador fallido", (err as Error).name);
+      // Si el avance falló sin cambiar el protocolo, se devuelve la espera para que el próximo barrido reintente.
+      if (claimed) {
+        try { await restoreWait(deps.db, inc); } catch (e) { console.error("incidencias: no se pudo restaurar la espera", (e as Error).name); }
+      }
     }
   }
   return { ran, failed };
@@ -40,9 +46,17 @@ export async function escalateOverdue(deps: RunnerDeps): Promise<number> {
       const { row, escalated } = await escalateIncidentResult(deps, inc, "sla");
       if (!escalated) continue;
       n++;
-      await recordKpi(deps.db, "sla_incumplido", { ref_id: inc.id, datos: { urgencia: inc.urgencia } });
-      const t = await targetFromIncident(deps.db, inc);
-      if (t) await sendTraveler(deps, t, row.id, ESCALATED_REPLY);
+      try {
+        const t = await targetFromIncident(deps.db, inc);
+        if (t) await sendTraveler(deps, t, row.id, ESCALATED_REPLY);
+      } catch (err) {
+        console.error("incidencias: aviso por SLA fallido", (err as Error).name);
+      }
+      try {
+        await recordKpi(deps.db, "sla_incumplido", { ref_id: inc.id, datos: { urgencia: inc.urgencia } });
+      } catch (err) {
+        console.error("incidencias: KPI de SLA fallido", (err as Error).name);
+      }
     } catch (err) {
       console.error("incidencias: escalado por SLA fallido", (err as Error).name);
     }
@@ -59,6 +73,12 @@ export async function closeStale(db: Db, now: Date): Promise<number> {
       isNotNull(incident.proximo_paso_at), lte(incident.proximo_paso_at, now),
     ))
     .returning({ id: incident.id });
-  for (const { id } of closed) await recordKpi(db, "incidencia_cerrada_inactividad", { ref_id: id });
+  for (const { id } of closed) {
+    try {
+      await recordKpi(db, "incidencia_cerrada_inactividad", { ref_id: id });
+    } catch (err) {
+      console.error("incidencias: KPI de cierre fallido", (err as Error).name);
+    }
+  }
   return closed.length;
 }
