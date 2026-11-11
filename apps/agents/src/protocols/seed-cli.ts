@@ -9,6 +9,17 @@ if (!url || !tope || !moneda) {
   console.error("uso: DATABASE_URL=... yarn workspace @bextia/agents protocol:seed <tope> <moneda>");
   process.exit(1);
 }
-const r = await seedProtocol(createDb(url), { tope: Number(tope), moneda });
+const host = new URL(url).hostname.replace(/^\[|\]$/g, "");
+if (!["localhost", "127.0.0.1", "::1"].includes(host) && process.env.ALLOW_REMOTE_SEED !== "1") {
+  console.error("DATABASE_URL no es local; define ALLOW_REMOTE_SEED=1 para sembrar una BD remota");
+  process.exit(1);
+}
+let r;
+try {
+  r = await seedProtocol(createDb(url), { tope: Number(tope), moneda });
+} catch (e) {
+  console.error(`siembra rechazada: ${e instanceof Error ? e.message : "error"}`);
+  process.exit(1);
+}
 console.log(`protocolo traslado_no_presentado v${r.version} activo`);
 process.exit(0);

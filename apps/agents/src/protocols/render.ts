@@ -1,4 +1,4 @@
-import type { ProtocolContext } from "./types.ts";
+import { PLACEHOLDER_RE, type ProtocolContext } from "./types.ts";
 
 export function templateVars(ctx: ProtocolContext, extra: { eta?: number | null; monto?: number | null } = {}): Record<string, string> {
   const s = ctx.servicio;
@@ -16,5 +16,5 @@ export function templateVars(ctx: ProtocolContext, extra: { eta?: number | null;
 }
 
 export function render(tpl: string, vars: Record<string, string>): string {
-  return tpl.replace(/\{\{\s*([a-z_]+)\s*\}\}/g, (_m, k: string) => (Object.hasOwn(vars, k) ? vars[k] : ""));
+  return tpl.replace(PLACEHOLDER_RE, (_m, k: string) => (Object.hasOwn(vars, k) ? vars[k] : ""));
 }

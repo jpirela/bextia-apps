@@ -20,7 +20,7 @@ export async function seedProtocol(db: Db, opts: { tope: number; moneda: string;
     await tx.update(protocol).set({ activo: false }).where(eq(protocol.codigo, def.codigo));
     const [row] = await tx.insert(protocol).values({
       codigo: def.codigo, nombre: def.nombre, version, activo: true,
-      definicion: raw as Record<string, unknown>, tope_autorizado: opts.tope.toFixed(2), moneda: opts.moneda,
+      definicion: def as unknown as Record<string, unknown>, tope_autorizado: opts.tope.toFixed(2), moneda: opts.moneda,
     }).returning({ id: protocol.id });
     return { id: row.id, version };
   });

@@ -54,6 +54,24 @@ describe("advance", () => {
     expect(r.state).toMatchObject({ autorizado: 40, terminado: true });
   });
 
+  it.each([-5, 0, 2.5, NaN])("ETA inválido (%s) se trata como vencimiento → taxi", (eta) => {
+    const { state } = advance(def, null, { tipo: "inicio" }, ctx());
+    const r = advance(def, state, { tipo: "respuesta_proveedor", eta_min: eta }, ctx());
+    expect(r.actions[0]).toEqual({ tipo: "autorizar", monto: 40, concepto: "taxi" });
+    expect(r.state?.eta_min).toBeNull();
+  });
+
+  it("un ciclo que vuelve a autorizar_gasto escala por doble autorización", () => {
+    const twice = parseProtocol({
+      codigo: "twice", nombre: "Twice", inicio: "a",
+      pasos: { a: { tipo: "autorizar_gasto", concepto: "taxi", siguiente: "b" }, b: { tipo: "mensaje_viajero", plantilla: "t", siguiente: "a" } },
+      plantillas: { t: "hola" },
+    });
+    const r = advance(twice, null, { tipo: "inicio" }, ctx());
+    expect(r.actions.filter((a) => a.tipo === "autorizar")).toHaveLength(1);
+    expect(r.actions.at(-1)).toEqual({ tipo: "escalar", motivo: "doble_autorizacion" });
+  });
+
   it("sin servicio verificable → escala", () => {
     const r = advance(def, null, { tipo: "inicio" }, ctx({ servicio: null }));
     expect(r.actions).toEqual([

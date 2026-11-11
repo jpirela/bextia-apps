@@ -14,7 +14,7 @@ export function advance(def: ProtocolDef, state: ProtocolState | null, event: Pr
   if (!state || state.terminado) return { state, actions: [] };
   const step = def.pasos[state.paso];
   if (step?.tipo !== "esperar_respuesta") return { state, actions: [] };
-  if (event.tipo === "respuesta_proveedor" && event.eta_min !== null && event.eta_min <= step.max_eta_min) {
+  if (event.tipo === "respuesta_proveedor" && Number.isInteger(event.eta_min) && event.eta_min! >= 1 && event.eta_min! <= step.max_eta_min) {
     return run(def, { ...state, espera_hasta: null, eta_min: event.eta_min, paso: step.si_responde }, ctx);
   }
   return run(def, { ...state, espera_hasta: null, paso: step.si_vence }, ctx);
@@ -51,6 +51,7 @@ function run(def: ProtocolDef, start: ProtocolState, ctx: ProtocolContext): Adva
         return { state: s, actions };
       }
       case "autorizar_gasto":
+        if (s.autorizado != null) return end({ tipo: "escalar", motivo: "doble_autorizacion" });
         if (!(ctx.tope > 0)) return end({ tipo: "escalar", motivo: "sin_tope" });
         s.autorizado = ctx.tope;
         actions.push({ tipo: "autorizar", monto: ctx.tope, concepto: step.concepto });

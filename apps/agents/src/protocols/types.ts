@@ -42,4 +42,6 @@ export interface ProtocolContext {
   servicio: BookingService | null;
 }
 
+// Único patrón de variables: lo comparten el parser y el render.
+export const PLACEHOLDER_RE = /\{\{\s*([a-z_]+)\s*\}\}/g;
 export const PLACEHOLDERS = ["viajero", "codigo", "proveedor", "lugar", "hora", "referencia", "eta", "monto", "moneda"] as const;

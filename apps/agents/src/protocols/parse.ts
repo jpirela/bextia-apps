@@ -1,4 +1,4 @@
-import { PLACEHOLDERS, type ProtocolDef, type Step, type StepType } from "./types.ts";
+import { PLACEHOLDER_RE, PLACEHOLDERS, type ProtocolDef, type Step, type StepType } from "./types.ts";
 
 export class InvalidProtocolError extends Error {
   override name = "InvalidProtocolError";
@@ -16,7 +16,7 @@ const SHAPE: Record<StepType, { refs: string[]; plantilla?: boolean; codes?: str
 };
 const STEP_NAME = /^[a-z][a-z0-9_]{0,39}$/;
 const CODE = /^[a-z][a-z0-9_]{0,39}$/;
-const VAR = /\{\{\s*([a-z_]+)\s*\}\}/g;
+
 
 function fail(msg: string): never {
   throw new InvalidProtocolError(msg);
@@ -43,7 +43,7 @@ export function parseProtocol(raw: unknown): ProtocolDef {
   for (const [k, v] of Object.entries(plantillasRaw)) {
     if (!STEP_NAME.test(k)) fail(`plantilla ${k}: nombre inválido`);
     const t = str(v, `plantilla ${k}`);
-    for (const m of t.matchAll(VAR)) {
+    for (const m of t.matchAll(PLACEHOLDER_RE)) {
       if (!(PLACEHOLDERS as readonly string[]).includes(m[1])) fail(`plantilla ${k}: variable {{${m[1]}}} no permitida`);
     }
     plantillas[k] = t;
