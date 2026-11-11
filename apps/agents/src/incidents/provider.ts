@@ -12,51 +12,66 @@ const norm = (t: string) =>
 const REJECT_RE = /\b(no podemos|no puedo|imposible|impossib|imposs[ií]v|cancel(?!aci)|can't|cannot|nao podemos|nao posso)/;
 const MAX_ETA = 600;
 
+// Una sola tabla de duraciones en palabras: sirve para contar cantidades y para dar los minutos.
+// Orden: de la más larga a la más corta; cada coincidencia se consume antes de probar la siguiente.
+const DURATIONS: ReadonlyArray<{ re: RegExp; minutos: number }> = [
+  { re: /\b(?:(?:una|uma|un|1|an|a|one)\s+)?(?:hora y media|hora e meia|hour and a half)\b/g, minutos: 90 },
+  { re: /\b(?:media hora|meia hora|(?:a\s+)?half an hour|(?:a\s+)?half hour)\b/g, minutos: 30 },
+  { re: /\b(?:una|uma|un|1|an|one)\s+(?:hora|hour)\b/g, minutos: 60 },
+];
+// Unidades pegadas al número ("20min" → "20 min"). "20m" no: es ambiguo con metros.
+const GLUED_RE = /\b(\d{1,3})(mins?|minutos?|minutes?)\b/g;
+
 // Allowlist: la regex de ETA solo actúa si TODAS las palabras son conocidas.
-// Cualquier negación, rechazo o palabra desconocida manda el mensaje al LLM.
+// Cualquier negación, rechazo, pregunta, alternativa o palabra desconocida manda el mensaje al LLM.
+// Conectores y unidades que pueden quedar tras consumir las duraciones de DURATIONS.
 const TIME_WORDS = new Set([
-  "min", "mins", "minuto", "minutos", "minute", "minutes", "hora", "horas", "hour", "hours", "h",
-  "y", "e", "and", "a", "an", "half", "media", "meia", "uma", "una", "uno", "un",
-  "en", "em", "in", "aprox", "aproximadamente", "approx", "about", "unos", "umas", "around",
+  "min", "mins", "minuto", "minutos", "minute", "minutes",
+  "y", "e", "and", "en", "em", "in", "aprox", "aproximadamente", "approx", "about", "unos", "umas", "around",
 ]);
+// Sin "o"/"or" (alternativas) ni "si" (solo vale como primera palabra afirmativa, ver parseEtaRegex).
 const ALLOW_WORDS = new Set([
   // acuses y saludos
   "ok", "okay", "vale", "listo", "perfecto", "confirmado", "confirmamos", "confirmo", "confirmed",
-  "sure", "yes", "si", "sim", "claro", "hola", "buenas", "ola", "hi", "hello", "gracias", "obrigado", "thanks",
+  "sure", "yes", "sim", "claro", "hola", "buenas", "ola", "hi", "hello", "gracias", "obrigado", "thanks",
   // llegada
   "llegamos", "llego", "llega", "llegara", "llegaremos", "estamos", "estoy", "vamos", "voy", "salimos", "sale",
   "camino", "chegamos", "chego", "chega", "caminho", "vou", "on", "the", "our", "way", "we", "we'll", "will",
   "be", "there", "arrive", "arriving", "coming", "driver", "conductor", "chofer", "motorista",
-  "el", "la", "o", "ahi", "alli", "aqui",
+  "el", "la", "ahi", "alli", "aqui",
 ]);
 
-function tokensOf(text: string): string[] {
-  return norm(text)
+function tokensOf(t: string): string[] {
+  return t
     .replace(/\p{Extended_Pictographic}|️|‍/gu, " ")
     .split(/[\s,.;:!?¡¿()"«»\-–—*_/]+/)
     .filter(Boolean);
 }
 
-// true si el mensaje solo contiene palabras de tiempo y palabras permitidas, con a lo sumo un número.
-function passesAllowlist(text: string): boolean {
-  let numbers = 0;
-  for (const tok of tokensOf(text)) {
-    if (/^\d{1,3}'?$/.test(tok)) { numbers++; continue; }
-    if (TIME_WORDS.has(tok) || ALLOW_WORDS.has(tok)) continue;
-    return false;
-  }
-  return numbers <= 1;
-}
-
 export function parseEtaRegex(text: string): number | null {
-  if (!passesAllowlist(text)) return null;
-  const t = norm(text);
-  if (/\b(hora y media|hour and a half|hora e meia)\b/.test(t)) return 90;
-  if (/\b(media hora|half an hour|meia hora)\b/.test(t)) return 30;
-  if (/\b(una hora|an hour|uma hora)\b/.test(t)) return 60;
-  const m = t.match(/\b(\d{1,3})\s*(min|')/) ?? t.match(/^\s*(\d{1,3})\s*$/);
-  if (!m) return null;
-  const n = Number(m[1]);
+  if (/[?¿]/.test(text)) return null; // preguntas → LLM
+  let t = norm(text).replace(GLUED_RE, "$1 $2");
+  // "si" solo como afirmación inicial: "si, 20 min" o "si 20 min". "si llegamos..." es condicional.
+  const affirm = t.match(/^\s*si\b(?=\s*[,.!:;]|\s+\d)/);
+  if (affirm) t = t.slice(affirm[0].length);
+  // Contar cantidades: cada duración en palabras y cada número. Debe haber exactamente una.
+  let quantities = 0;
+  let worded: number | null = null;
+  for (const d of DURATIONS) {
+    t = t.replace(d.re, () => { quantities++; worded = d.minutos; return " "; });
+  }
+  let n: number | null = worded;
+  for (const tok of tokensOf(t)) {
+    if (/^\d{1,3}'?$/.test(tok)) { quantities++; continue; }
+    if (TIME_WORDS.has(tok) || ALLOW_WORDS.has(tok)) continue;
+    return null; // palabra desconocida (incluye "si" fuera de la primera posición y restos como "hora", "media")
+  }
+  if (quantities !== 1) return null;
+  if (n === null) {
+    const m = t.match(/\b(\d{1,3})\s*(min|')/) ?? t.match(/^\s*(\d{1,3})\s*$/);
+    if (!m) return null;
+    n = Number(m[1]);
+  }
   return n >= 1 && n <= MAX_ETA ? n : null;
 }
 

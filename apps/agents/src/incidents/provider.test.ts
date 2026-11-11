@@ -82,6 +82,19 @@ describe("fuera del allowlist: sin ETA por regex, el LLM decide", () => {
   });
 });
 
+describe("varias cantidades, preguntas y condicionales: sin ETA por regex", () => {
+  it.each([
+    "20 min o una hora", "20 min o media hora", "media hora o 20 min", "hora y media o 20 min",
+    "media hora y 20 min", "20 min y una hora", "una hora y 20 min",
+    "si llegamos en 20 min", "¿llegamos en 20 min?", "20 min?", "en 20 min si", "20m",
+  ])("%s → LLM llamado una vez", async (t) => {
+    expect(parseEtaRegex(t)).toBeNull();
+    const llm = createScriptedLlm({ classify: [{ ok: true, value: { tipo: "desconocido", minutos: null } }] });
+    expect(await parseProviderReply(llm, t)).toEqual({ tipo: "desconocido" });
+    expect(llm.calls.classify).toHaveLength(1);
+  });
+});
+
 describe("rechazo por REJECT_RE antes del allowlist (sin LLM)", () => {
   it.each(["can’t 20 min", "impossible, 20 min", "impossível, 20 min"])("%s → rechazo sin LLM", async (t) => {
     const llm = createScriptedLlm({});
@@ -99,6 +112,11 @@ describe("controles con allowlist: ETA sin LLM", () => {
     ["Chegamos em 20 min", 20],
     ["hora y media", 90],
     ["una hora y media", 90],
+    ["media hora", 30],
+    ["si, 20 min", 20],
+    ["si 20 min", 20],
+    ["20min", 20],
+    ["20mins", 20],
   ])("%s → eta %s sin LLM", async (t, n) => {
     const llm = createScriptedLlm({});
     expect(await parseProviderReply(llm, t)).toEqual({ tipo: "eta", minutos: n });
