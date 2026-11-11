@@ -17,7 +17,7 @@ describe("detectEmergency", () => {
     "Fui robado en la calle", "My bag was stolen", "Eu tive a carteira roubada", "Sofri um acidente de carro",
     "Fui atacado en la calle", "Eu fui atacado", "Tuve un choque con el coche", "Me secuestraron",
     "Tenho uma overdose", "Possible overdose", "Tuvo una convulsión", "Ele teve uma convulsão",
-    "Hubo un robo en el hotel",
+    "Hubo un robo en el hotel", "Hubo robos en la zona", "Me roubaram o passaporte", "Sofri um roubo",
   ])("detecta stems nuevos y ajustados: %s", (t) => expect(detectEmergency(t)).toBe(true));
   it.each(["El traslado no llegó", "¿A qué hora es el desayuno?", "The driver is late", "Mi robot de cocina no funciona"])(
     "no detecta: %s",

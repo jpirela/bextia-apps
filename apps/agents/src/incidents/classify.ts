@@ -9,7 +9,7 @@ const norm = (t: string) => t.normalize("NFD").replace(/\p{Diacritic}/gu, "").to
 const EMERGENCY_STEMS = [
   "emergencia", "emergency", "ambulancia", "ambulance", "herid", "injur", "ferid", "accidente", "accident",
   "infarto", "heart attack", "inconsciente", "unconscious", "desmay", "desmai", "sangr", "bleed",
-  "robo\\b", "robaron", "robad", "robar", "robbed", "robbery", "stolen", "roubad", "asalt", "assalt", "mugged",
+  "robos?\\b", "robad", "robar", "roub", "robbed", "robbery", "stolen", "roubad", "asalt", "assalt", "mugged",
   "agresi", "attacked", "atac", "acident", "choque", "secuestr", "overdos", "convuls",
   "policia", "police", "incendio", "fire", "socorro",
 ];
