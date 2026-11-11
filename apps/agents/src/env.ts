@@ -18,6 +18,7 @@ export interface Env {
   leadsWebhook: { url: string; secret: string } | null;
   backofficeUrl: string | null;
   scoringRules: ScoringRules;
+  widgetTokenSecret: string | null;
 }
 
 function required(src: Source, key: string): string {
@@ -30,6 +31,13 @@ function allOrNull<K extends string>(src: Source, keys: readonly K[]): Record<K,
   const values = keys.map((k) => src[k]?.trim());
   if (values.some((v) => !v)) return null;
   return Object.fromEntries(keys.map((k, i) => [k, values[i] as string])) as Record<K, string>;
+}
+
+function widgetSecret(src: Source, prod: boolean): string | null {
+  const v = src.WIDGET_TOKEN_SECRET?.trim() || null;
+  if (prod && !v) throw new Error("Falta la variable de entorno WIDGET_TOKEN_SECRET (mínimo 32 caracteres)");
+  if (v && v.length < 32) throw new Error("WIDGET_TOKEN_SECRET debe tener al menos 32 caracteres");
+  return v;
 }
 
 export function readEnv(src: Source): Env {
@@ -55,6 +63,7 @@ export function readEnv(src: Source): Env {
       host: smtp.SMTP_HOST, port: Number(smtp.SMTP_PORT), user: smtp.SMTP_USER, pass: smtp.SMTP_PASS, from: smtp.SMTP_FROM,
     },
     anthropicApiKey: prod ? required(src, "ANTHROPIC_API_KEY") : src.ANTHROPIC_API_KEY?.trim() || null,
+    widgetTokenSecret: widgetSecret(src, prod),
     embed: embed && { url: embed.SUPABASE_URL, secret: embed.EMBED_SECRET },
     leadsWebhook: hook && { url: hook.LEADS_WEBHOOK_URL, secret: hook.LEADS_WEBHOOK_SECRET },
     backofficeUrl: src.BACKOFFICE_URL?.trim() || null,

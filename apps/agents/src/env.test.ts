@@ -6,7 +6,7 @@ const base = { DATABASE_URL: "postgres://x", API_TOKEN: "t" };
 describe("readEnv", () => {
   it("en producción exige CORS_ORIGINS", () => {
     expect(() => readEnv({ ...base, NODE_ENV: "production" })).toThrow("CORS_ORIGINS");
-    expect(readEnv({ ...base, NODE_ENV: "production", CORS_ORIGINS: "https://a.com", ANTHROPIC_API_KEY: "k" }).corsOrigins).toEqual(["https://a.com"]);
+    expect(readEnv({ ...base, NODE_ENV: "production", CORS_ORIGINS: "https://a.com", ANTHROPIC_API_KEY: "k", WIDGET_TOKEN_SECRET: "x".repeat(32) }).corsOrigins).toEqual(["https://a.com"]);
   });
 
   it("exige DATABASE_URL y API_TOKEN", () => {
@@ -45,6 +45,13 @@ describe("env agente 1", () => {
     expect(e.anthropicApiKey).toBeNull();
     expect(e.embed).toEqual({ url: "https://x.supabase.co", secret: "s" });
     expect(e.leadsWebhook).toBeNull(); // falta LEADS_WEBHOOK_SECRET
+  });
+  it("WIDGET_TOKEN_SECRET: obligatoria en producción y de al menos 32 caracteres", () => {
+    const prod = { ...base, NODE_ENV: "production", CORS_ORIGINS: "https://a.com", ANTHROPIC_API_KEY: "k" };
+    expect(() => readEnv(prod)).toThrow("WIDGET_TOKEN_SECRET");
+    expect(() => readEnv({ ...prod, WIDGET_TOKEN_SECRET: "corto" })).toThrow("WIDGET_TOKEN_SECRET");
+    expect(readEnv({ ...prod, WIDGET_TOKEN_SECRET: "x".repeat(32) }).widgetTokenSecret).toBe("x".repeat(32));
+    expect(readEnv(base).widgetTokenSecret).toBeNull();
   });
   it("SCORING_RULES_JSON inválido falla al arrancar", () => {
     expect(() => readEnv({ ...base, SCORING_RULES_JSON: "{" })).toThrow(/SCORING_RULES_JSON/);

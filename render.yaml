@@ -45,6 +45,8 @@ services:
         generateValue: true
       - key: FORM_WEBHOOK_SECRET
         generateValue: true
+      - key: WIDGET_TOKEN_SECRET
+        generateValue: true
       - key: WHATSAPP_APP_SECRET
         sync: false
       - key: WHATSAPP_ACCESS_TOKEN
