@@ -54,23 +54,38 @@ describe("parseProviderReply", () => {
   });
 });
 
-describe("parseProviderReply: rechazos y ETA con número", () => {
+describe("rechazo explícito: sin LLM", () => {
   it.each([
-    "No llegamos en 20 min", "No tenemos conductor", "no hay disponibilidad", "No podemos llegar, sin conductor",
-    "Unable to attend", "No puedo ir hoy",
+    "No podemos llegar, sin conductor", "No puedo ir hoy", "Servicio cancelado",
+    "Cancelamos el servicio, 20 min", "Ele cancelou o serviço",
   ])("%s → rechazo", async (t) => {
     expect(await parseProviderReply(createScriptedLlm({}), t)).toEqual({ tipo: "rechazo" });
   });
+});
+
+describe("negaciones van al LLM, nunca a ETA por regex", () => {
+  it.each([
+    "No llegaremos en 20 min", "No podremos llegar en 15 min", "Não conseguimos chegar em 20 min",
+    "we won't make it in 20 min", "not available, 30 min", "No llegamos en 20 min", "Unable to attend",
+  ])("%s → LLM decide (rechazo)", async (t) => {
+    const llm = createScriptedLlm({ classify: [{ ok: true, value: { tipo: "rechazo", minutos: null } }] });
+    expect(await parseProviderReply(llm, t)).toEqual({ tipo: "rechazo" });
+    expect(llm.calls.classify).toHaveLength(1);
+  });
+  it("«no hay ninguna cancelación» no es rechazo por cancel", async () => {
+    const llm = createScriptedLlm({ classify: [{ ok: true, value: { tipo: "desconocido", minutos: null } }] });
+    expect(await parseProviderReply(llm, "no hay ninguna cancelación")).toEqual({ tipo: "desconocido" });
+    expect(llm.calls.classify).toHaveLength(1);
+  });
+});
+
+describe("controles", () => {
   it.each([
     ["Llegamos en 20 min", 20],
     ["Llegamos en 20 min, sin cancelaciones", 20],
-    ["no hay cancelaciones, llegamos en 20 min", 20],
     ["una hora y media", 90],
-  ])("%s → eta %s", async (t, n) => {
+  ])("%s → eta %s sin LLM", async (t, n) => {
     expect(await parseProviderReply(createScriptedLlm({}), t)).toEqual({ tipo: "eta", minutos: n });
-  });
-  it("«cancelado» sigue siendo rechazo", async () => {
-    expect(await parseProviderReply(createScriptedLlm({}), "Servicio cancelado")).toEqual({ tipo: "rechazo" });
   });
 });
 

@@ -6,16 +6,16 @@ import type { Channel } from "../channels/types.ts";
 export type ProviderReply = { tipo: "eta"; minutos: number } | { tipo: "rechazo" } | { tipo: "desconocido" };
 
 const norm = (t: string) => t.normalize("NFD").replace(/\p{Diacritic}/gu, "").toLowerCase();
-// "cancel" exige que la palabra termine: "cancelaciones" (sin cancelar la reserva) no es rechazo.
-// "no hay cancelaciones" se excluye del patrón "no hay" por el mismo motivo.
-const REJECT_RE = new RegExp(
-  "\\b(no podemos|no puedo|imposible|cancel(?:ad[oa]|ar|led|ed)?\\b|can't|cannot|nao podemos|nao posso|not able|unable" +
-    "|no (?:llegamos|vamos|puede|podra|podemos|tenemos|estamos|hay(?!\\s+cancelaciones)))",
-);
+// Rechazo explícito: corta sin llamar al LLM. "cancel(?!aci)" cubre cancelar, cancelamos, cancelou,
+// cancelled, y excluye cancelación/cancelaciones.
+const REJECT_RE = /\b(no podemos|no puedo|imposible|cancel(?!aci)|can't|cannot|nao podemos|nao posso)/;
+// Cualquier negación: nunca se resuelve por regex de ETA; el LLM decide.
+const NEG_RE = /\b(no|nao|not|never|nunca|won't|wont|can't|cant|cannot|unable)\b/;
 const MAX_ETA = 600;
 
 export function parseEtaRegex(text: string): number | null {
   const t = norm(text);
+  if (NEG_RE.test(t)) return null;
   if (/\b(hora y media|hour and a half|hora e meia)\b/.test(t)) return 90;
   if (/\b(media hora|half an hour|meia hora)\b/.test(t)) return 30;
   if (/\b(una hora|an hour|uma hora)\b/.test(t)) return 60;
