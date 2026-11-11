@@ -117,7 +117,16 @@ describe("redactForLlm", () => {
     ["Llegué el 2026-11-08 10:30", "Llegué el 2026-11-08 10:30"], // fecha y hora intactas
     ["Me recoge Sol en la terminal 12", "Me recoge [proveedor] en la terminal 12"], // referencia < 3 caracteres: no se toca
     ["Soy ana, de apellido garcia lopez", "Soy [nombre], de apellido [nombre] [nombre]"], // nombre del viajero, sin acentos ni mayúsculas
+    ["Tel:600111222", "Tel:[telefono]"], // ":" pegado sin dígito delante no protege el número
+    ["mi móvil es 600111222: llámame", "mi móvil es [telefono]: llámame"], // ":" detrás sin dígito tampoco
   ])("%s → %s", (input, expected) => expect(redactForLlm(input, sol)).toBe(expected));
+
+  it("no tapa partículas del nombre (del, los…) sueltas en el texto", () => {
+    const b2 = { codigo: "BX-1001", viajero_nombre: "María del Carmen de los Santos", servicios: [] };
+    expect(redactForLlm("Soy maria carmen santos, cerca del hotel y los museos", b2)).toBe(
+      "Soy [nombre] [nombre] [nombre], cerca del hotel y los museos",
+    );
+  });
 });
 
 describe("Agente 2", () => {
