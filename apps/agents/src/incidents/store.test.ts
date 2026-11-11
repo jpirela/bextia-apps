@@ -1,9 +1,10 @@
+import { eq } from "drizzle-orm";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { createTestDb } from "../db/test-db.ts";
 import type { Db } from "../db/index.ts";
 import { booking, contact, conversation, incident, incident_action, kpi_event } from "../db/schema.ts";
 import {
-  canTransition, claimWait, findOrCreateIncident, InvalidTransitionError, logAction, recordKpi, saveIncident,
+  canTransition, claimWait, findOrCreateIncident, InvalidTransitionError, logAction, recordKpi, saveIncident, StaleIncidentError,
 } from "./store.ts";
 
 let db: Db;
@@ -70,9 +71,43 @@ describe("store de incidencias", () => {
   it("claimWait reclama una sola vez y respeta dueBy", async () => {
     const { input } = await seed();
     const a = await findOrCreateIncident(db, input);
-    await db.update(incident).set({ estado: "protocolo", proximo_paso_at: new Date("2026-11-08T10:15:00Z") });
+    await db.update(incident).set({ estado: "protocolo", proximo_paso_at: new Date("2026-11-08T10:15:00Z") }).where(eq(incident.id, a.id));
     expect(await claimWait(db, a.id, new Date("2026-11-08T10:14:00Z"))).toBe(false);
     expect(await claimWait(db, a.id, new Date("2026-11-08T10:15:00Z"))).toBe(true);
     expect(await claimWait(db, a.id)).toBe(false);
+  });
+
+  it("claimWait devuelve false fuera de protocolo y solo uno gana en concurrencia", async () => {
+    const { input } = await seed();
+    const a = await findOrCreateIncident(db, input);
+    await db.update(incident).set({ proximo_paso_at: new Date("2026-11-08T10:15:00Z") }).where(eq(incident.id, a.id));
+    expect(await claimWait(db, a.id)).toBe(false); // estado identificando
+    await db.update(incident).set({ estado: "protocolo" }).where(eq(incident.id, a.id));
+    const r = await Promise.all([claimWait(db, a.id), claimWait(db, a.id)]);
+    expect(r.filter(Boolean)).toHaveLength(1);
+  });
+
+  it("saveIncident es atómico: de dos escritores con la misma foto solo uno gana", async () => {
+    const { input } = await seed();
+    const a = await findOrCreateIncident(db, input);
+    const res = await Promise.allSettled([
+      saveIncident(db, a, { estado: "cerrado" }, now),
+      saveIncident(db, a, { estado: "escalado" }, now),
+    ]);
+    expect(res.filter((r) => r.status === "fulfilled")).toHaveLength(1);
+    const lost = res.find((r) => r.status === "rejected") as PromiseRejectedResult;
+    expect(lost.reason).toBeInstanceOf(StaleIncidentError);
+    const [row] = await db.select().from(incident).where(eq(incident.id, a.id));
+    const winner = (res.find((r) => r.status === "fulfilled") as PromiseFulfilledResult<typeof a>).value;
+    expect(row.estado).toBe(winner.estado);
+  });
+
+  it("no reabre un cerrado y rechaza montos inválidos", async () => {
+    const { input } = await seed();
+    const a = await findOrCreateIncident(db, input);
+    await saveIncident(db, a, { estado: "cerrado" }, now);
+    await expect(saveIncident(db, a, { estado: "bienvenida" }, now)).rejects.toBeInstanceOf(StaleIncidentError);
+    await expect(logAction(db, a.id, "decision", {}, -1)).rejects.toBeInstanceOf(RangeError);
+    await expect(logAction(db, a.id, "decision", {}, Number.NaN)).rejects.toBeInstanceOf(RangeError);
   });
 });

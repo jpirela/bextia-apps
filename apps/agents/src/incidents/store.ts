@@ -1,4 +1,4 @@
-import { and, eq, isNotNull, lte, ne, type SQL } from "drizzle-orm";
+import { and, eq, isNotNull, isNull, lte, ne, type SQL } from "drizzle-orm";
 import type { Db } from "../db/index.ts";
 import {
   incident, incident_action, kpi_event,
@@ -7,7 +7,7 @@ import {
 import type { Channel } from "../channels/types.ts";
 
 export type IncidentRow = typeof incident.$inferSelect;
-export type IncidentPatch = Partial<Omit<typeof incident.$inferInsert, "id" | "booking_id" | "created_at">>;
+export type IncidentPatch = Partial<Omit<typeof incident.$inferInsert, "id" | "booking_id" | "created_at" | "cerrado_at">>;
 
 export const INACTIVITY_MS = 24 * 60 * 60_000;
 
@@ -29,6 +29,11 @@ export function canTransition(from: IncidentState, to: IncidentState): boolean {
 export class InvalidTransitionError extends Error {
   override name = "InvalidTransitionError";
   constructor(from: IncidentState, to: IncidentState) { super(`${from} → ${to}`); }
+}
+
+export class StaleIncidentError extends Error {
+  override name = "StaleIncidentError";
+  constructor() { super("incidencia modificada por otro proceso o inexistente"); }
 }
 
 export const SLA_MINUTES: Record<IncidentUrgency, number> = { critica: 10, alta: 30, media: 60, baja: 240 };
@@ -54,18 +59,22 @@ export async function findOrCreateIncident(
 export async function saveIncident(db: Db, current: IncidentRow, patch: IncidentPatch, now = new Date()): Promise<IncidentRow> {
   const next = patch.estado ?? current.estado;
   if (!canTransition(current.estado, next)) throw new InvalidTransitionError(current.estado, next);
-  const set: IncidentPatch = { ...patch };
+  const set: IncidentPatch & { cerrado_at?: Date } = { ...patch };
   if (next === "cerrado" && current.estado !== "cerrado") set.cerrado_at = now;
+  const conds: SQL[] = [eq(incident.id, current.id), eq(incident.estado, current.estado)];
   if (patch.urgencia && !current.sla_vence && !patch.sla_vence) {
     set.sla_vence = new Date(now.getTime() + SLA_MINUTES[patch.urgencia] * 60_000);
+    conds.push(isNull(incident.sla_vence));
   }
-  const [row] = await db.update(incident).set(set).where(eq(incident.id, current.id)).returning();
+  const [row] = await db.update(incident).set(set).where(and(...conds)).returning();
+  if (!row) throw new StaleIncidentError();
   return row;
 }
 
 export async function logAction(
   db: Db, incidentId: string, tipo: IncidentActionType, detalle: Record<string, unknown> = {}, monto?: number,
 ): Promise<void> {
+  if (monto !== undefined && (!Number.isFinite(monto) || monto < 0)) throw new RangeError("monto inválido");
   await db.insert(incident_action).values({
     incident_id: incidentId, tipo, detalle, monto: monto === undefined ? null : monto.toFixed(2),
   });
