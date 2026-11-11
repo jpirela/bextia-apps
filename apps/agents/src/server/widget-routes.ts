@@ -1,5 +1,5 @@
 import type { Hono } from "hono";
-import { and, asc, eq, inArray } from "drizzle-orm";
+import { and, desc, eq, inArray } from "drizzle-orm";
 import type { Db } from "../db/index.ts";
 import { contact, conversation, message } from "../db/schema.ts";
 import { issueOtp, normalizeDestino, verifyOtp } from "../widget/otp.ts";
@@ -54,7 +54,7 @@ export function registerWidgetRoutes(app: Hono, deps: WidgetDeps): void {
     if (convs.length === 0) return c.json([]);
     const rows = await deps.db.select({ direccion: message.direccion, contenido: message.contenido, created_at: message.created_at })
       .from(message).where(inArray(message.conversation_id, convs.map((x) => x.id)))
-      .orderBy(asc(message.created_at)).limit(100);
-    return c.json(rows);
+      .orderBy(desc(message.created_at)).limit(100);
+    return c.json(rows.reverse());
   });
 }

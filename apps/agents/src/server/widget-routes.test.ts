@@ -54,4 +54,32 @@ describe("rutas del widget", () => {
     const { app } = setup();
     expect((await app.request("/widget/messages")).status).toBe(401);
   });
+  it("mensajes: aislamiento entre contactos y token vencido → 401", async () => {
+    const { app, sent, post } = setup();
+    await post("/widget/otp", { destino: "ana@example.com" });
+    const { token } = await (await post("/widget/token", { destino: "ana@example.com", codigo: sent[0].codigo })).json() as { token: string };
+    const [b] = await db.insert(contact).values({ email: "beto@example.com" }).returning();
+    const [conv] = await db.insert(conversation).values({ contact_id: b.id, canal: "web" }).returning();
+    await db.insert(message).values({ conversation_id: conv.id, canal: "web", direccion: "out", contenido: "Secreto de Beto", external_id: "b1" });
+    const res = await app.request("/widget/messages", { headers: { authorization: `Bearer ${token}` } });
+    expect(await res.json()).toEqual([]);
+    const late = new Hono();
+    registerWidgetRoutes(late, { db, tokenSecret: "s", now: () => new Date("2026-11-09T10:00:00Z"), deliverOtp: async () => {} });
+    expect((await late.request("/widget/messages", { headers: { authorization: `Bearer ${token}` } })).status).toBe(401);
+  });
+  it("mensajes: devuelve los 100 más recientes en orden cronológico", async () => {
+    const { app, sent, post } = setup();
+    await post("/widget/otp", { destino: "ana@example.com" });
+    const { token } = await (await post("/widget/token", { destino: "ana@example.com", codigo: sent[0].codigo })).json() as { token: string };
+    const [c] = await db.insert(contact).values({ email: "ana@example.com" }).returning();
+    const [conv] = await db.insert(conversation).values({ contact_id: c.id, canal: "web" }).returning();
+    await db.insert(message).values(Array.from({ length: 105 }, (_, i) => ({
+      conversation_id: conv.id, canal: "web" as const, direccion: "out" as const, contenido: `m${i}`, external_id: `x${i}`,
+      created_at: new Date(Date.UTC(2026, 10, 1, 0, i)),
+    })));
+    const rows = await (await app.request("/widget/messages", { headers: { authorization: `Bearer ${token}` } })).json() as Array<{ contenido: string }>;
+    expect(rows).toHaveLength(100);
+    expect(rows[0].contenido).toBe("m5");
+    expect(rows[99].contenido).toBe("m104");
+  });
 });

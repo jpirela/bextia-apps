@@ -43,4 +43,16 @@ describe("OTP del widget", () => {
     expect(await issueOtp(db, "s", "ana@example.com", { now: at(3), random: () => "444444" })).toBeNull();
     expect(await issueOtp(db, "s", "ana@example.com", { now: at(13), random: () => "555555" })).toBe("555555");
   });
+  it("el límite de intentos es atómico frente a verificaciones paralelas", async () => {
+    await issueOtp(db, "s", "ana@example.com", { now: t0, random: () => "123456" });
+    const bad = await Promise.all(Array.from({ length: 10 }, () => verifyOtp(db, "s", "ana@example.com", "000000", at(1))));
+    expect(bad.every((b) => b === false)).toBe(true);
+    expect(await verifyOtp(db, "s", "ana@example.com", "123456", at(1))).toBe(false);
+    const [row] = await db.select().from(web_otp);
+    expect(row.intentos).toBe(5);
+  });
+  it("emisiones paralelas respetan el máximo de 3", async () => {
+    const r = await Promise.all(Array.from({ length: 6 }, (_, i) => issueOtp(db, "s", "ana@example.com", { now: at(i * 0.01), random: () => String(100000 + i) })));
+    expect(r.filter((c) => c !== null)).toHaveLength(3);
+  });
 });
