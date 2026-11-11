@@ -5,14 +5,27 @@ import type { Mailer } from "../notify/mailer.ts";
 import { advance } from "../protocols/engine.ts";
 import { parseProtocol } from "../protocols/parse.ts";
 import type { ProtocolContext, ProtocolDef, ProtocolEvent } from "../protocols/types.ts";
-import { escalateIncidentResult } from "./escalate.ts";
+import { escalateIncidentResult, type EscalationExtra } from "./escalate.ts";
 import { ESCALATED_REPLY } from "./prompts.ts";
 import { providerTarget, type ProviderChannels, type ProviderTarget } from "./provider.ts";
 import { sendProvider, sendTraveler, targetFromIncident, type AgentIo, type TravelerTarget } from "./reply.ts";
 import {
   INACTIVITY_MS, logAction, recordKpi, saveIncident, StaleIncidentError,
-  type IncidentPatch, type IncidentRow,
+  type IncidentPatch, type IncidentRow, type SaveOptions,
 } from "./store.ts";
+
+type State = IncidentRow["protocolo_estado"];
+
+// Igualdad semántica del estado del protocolo (lo mismo que compara el jsonb en la BD).
+function sameState(a: State, b: State): boolean {
+  if (a === null || b === null) return a === b;
+  return a.paso === b.paso && a.espera_hasta === b.espera_hasta && a.eta_min === b.eta_min
+    && a.autorizado === b.autorizado && a.terminado === b.terminado;
+}
+
+// Al escalar por un fallo del runner, el protocolo queda terminado en la misma escritura del escalado.
+const markTerminated: EscalationExtra = (c) =>
+  c.protocolo_estado ? { protocolo_estado: { ...c.protocolo_estado, terminado: true } } : {};
 
 export interface RunnerDeps extends AgentIo { mailer: Mailer | null; backofficeUrl?: string | null; providerChannels: ProviderChannels }
 export interface LoadedProtocol { id: string; def: ProtocolDef; tope: number; moneda: string }
@@ -46,9 +59,11 @@ async function protocolById(db: Db, id: string): Promise<LoadedProtocol | null> 
 
 // Guarda el cambio de estado; si otro proceso ganó la carrera, relee la fila y devuelve null
 // para que quien llama se detenga sin repetir efectos (mensajes, contacto, autorización).
-async function commit(db: Db, inc: IncidentRow, patch: IncidentPatch, now: Date): Promise<{ row: IncidentRow; won: boolean }> {
+async function commit(
+  db: Db, inc: IncidentRow, patch: IncidentPatch, now: Date, opts: SaveOptions = {},
+): Promise<{ row: IncidentRow; won: boolean }> {
   try {
-    return { row: await saveIncident(db, inc, patch, now), won: true };
+    return { row: await saveIncident(db, inc, patch, now, opts), won: true };
   } catch (err) {
     if (!(err instanceof StaleIncidentError)) throw err;
     console.warn("incidencias: carrera perdida en el runner", err.name);
@@ -59,8 +74,10 @@ async function commit(db: Db, inc: IncidentRow, patch: IncidentPatch, now: Date)
 }
 
 // Primero escala (transición atómica) y solo si esta llamada ganó avisa al viajero: sin avisos dobles.
-export async function escalateWithNotice(deps: RunnerDeps, inc: IncidentRow, motivo: string, t: TravelerTarget | null): Promise<IncidentRow> {
-  const { row, escalated } = await escalateIncidentResult(deps, inc, motivo);
+export async function escalateWithNotice(
+  deps: RunnerDeps, inc: IncidentRow, motivo: string, t: TravelerTarget | null, extra?: EscalationExtra,
+): Promise<IncidentRow> {
+  const { row, escalated } = await escalateIncidentResult(deps, inc, motivo, extra);
   if (escalated && t) await sendTraveler(deps, t, row.id, ESCALATED_REPLY);
   return row;
 }
@@ -96,6 +113,9 @@ export async function runProtocol(deps: RunnerDeps, inc: IncidentRow, event: Pro
   };
   const r = advance(p.def, prev, event, ctx);
   if (r.actions.length === 0) return inc;
+  // El cerrojo del commit es protocolo_estado previo: todo avance con efectos debe cambiarlo.
+  // Si no cambia (definición cíclica en el mismo milisegundo, p. ej.), no hay cerrojo: se escala sin efectos.
+  if (sameState(r.state, prev)) return escalateWithNotice(deps, inc, "estado_sin_cambio", t);
 
   // 1) Planificar: validar todo lo que puede abortar (canal del proveedor, monto) antes de cualquier efecto.
   const patch: IncidentPatch = { protocolo_estado: r.state };
@@ -119,8 +139,9 @@ export async function runProtocol(deps: RunnerDeps, inc: IncidentRow, event: Pro
     ? { protocolo_estado: { ...r.state, terminado: true, autorizado: prev?.autorizado ?? null } }
     : patch;
 
-  // 2) Persistir la transición ANTES de los efectos: quien pierde la carrera se detiene aquí.
-  const { row, won } = await commit(db, inc, toSave, now);
+  // 2) Persistir la transición ANTES de los efectos, condicionada a estado Y protocolo_estado previos:
+  //    de dos avances del mismo paso solo uno gana; el perdedor se detiene aquí sin efectos.
+  const { row, won } = await commit(db, inc, toSave, now, { guardProtocolState: true });
   if (!won) return row;
   let cur = row;
 
@@ -135,7 +156,7 @@ export async function runProtocol(deps: RunnerDeps, inc: IncidentRow, event: Pro
         if (t) await sendTraveler(deps, t, cur.id, a.texto);
         break;
       case "enviar_proveedor":
-        if (!(await sendProvider(deps, pt!, cur.id, a.texto))) return escalateWithNotice(deps, cur, "proveedor_envio_fallido", t);
+        if (!(await sendProvider(deps, pt!, cur.id, a.texto))) return escalateWithNotice(deps, cur, "proveedor_envio_fallido", t, markTerminated);
         break;
       case "programar":
         await logAction(db, cur.id, "espera", { hasta: a.at.toISOString() });

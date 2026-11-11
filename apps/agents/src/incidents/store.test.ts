@@ -102,6 +102,27 @@ describe("store de incidencias", () => {
     expect(row.estado).toBe(winner.estado);
   });
 
+  it("guardProtocolState: también condiciona sobre protocolo_estado (null y no null)", async () => {
+    const { input } = await seed();
+    const a = await findOrCreateIncident(db, input);
+    const s1 = { paso: "esperar", espera_hasta: "2026-11-08T10:15:00.000Z", eta_min: null, autorizado: null, terminado: false };
+    const res = await Promise.allSettled([
+      saveIncident(db, a, { protocolo_estado: s1 }, now, { guardProtocolState: true }),
+      saveIncident(db, a, { protocolo_estado: { ...s1, paso: "otro" } }, now, { guardProtocolState: true }),
+    ]);
+    expect(res.filter((r) => r.status === "fulfilled")).toHaveLength(1);
+    expect((res.find((r) => r.status === "rejected") as PromiseRejectedResult).reason).toBeInstanceOf(StaleIncidentError);
+    const [b] = await db.select().from(incident).where(eq(incident.id, a.id));
+    // Mismo contenido jsonb con otro orden de claves: coincide.
+    const reordered = { ...b, protocolo_estado: { terminado: false, autorizado: null, eta_min: null, espera_hasta: b.protocolo_estado!.espera_hasta, paso: b.protocolo_estado!.paso } };
+    const ok = await saveIncident(db, reordered, { protocolo_estado: { ...s1, terminado: true } }, now, { guardProtocolState: true });
+    expect(ok.protocolo_estado).toMatchObject({ terminado: true });
+    // Foto vieja de protocolo_estado: pierde aunque el estado coincida.
+    await expect(saveIncident(db, b, { protocolo_estado: s1 }, now, { guardProtocolState: true })).rejects.toBeInstanceOf(StaleIncidentError);
+    // Sin la opción, el comportamiento no cambia.
+    await expect(saveIncident(db, b, { tipologia: "otra" }, now)).resolves.toMatchObject({ tipologia: "otra" });
+  });
+
   it("no reabre un cerrado y rechaza montos inválidos", async () => {
     const { input } = await seed();
     const a = await findOrCreateIncident(db, input);

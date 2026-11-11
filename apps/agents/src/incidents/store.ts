@@ -1,4 +1,4 @@
-import { and, eq, isNotNull, isNull, lte, ne, type SQL } from "drizzle-orm";
+import { and, eq, isNotNull, isNull, lte, ne, sql, type SQL } from "drizzle-orm";
 import type { Db } from "../db/index.ts";
 import {
   incident, incident_action, kpi_event,
@@ -56,12 +56,25 @@ export async function findOrCreateIncident(
   return row;
 }
 
-export async function saveIncident(db: Db, current: IncidentRow, patch: IncidentPatch, now = new Date()): Promise<IncidentRow> {
+export interface SaveOptions {
+  // Condiciona además sobre protocolo_estado = current.protocolo_estado (igualdad jsonb): cerrojo
+  // optimista del runner para que dos avances del mismo paso no ejecuten efectos dos veces.
+  guardProtocolState?: boolean;
+}
+
+export async function saveIncident(
+  db: Db, current: IncidentRow, patch: IncidentPatch, now = new Date(), opts: SaveOptions = {},
+): Promise<IncidentRow> {
   const next = patch.estado ?? current.estado;
   if (!canTransition(current.estado, next)) throw new InvalidTransitionError(current.estado, next);
   const set: IncidentPatch & { cerrado_at?: Date } = { ...patch };
   if (next === "cerrado" && current.estado !== "cerrado") set.cerrado_at = now;
   const conds: SQL[] = [eq(incident.id, current.id), eq(incident.estado, current.estado)];
+  if (opts.guardProtocolState) {
+    conds.push(current.protocolo_estado === null
+      ? isNull(incident.protocolo_estado)
+      : sql`${incident.protocolo_estado} = ${JSON.stringify(current.protocolo_estado)}::jsonb`);
+  }
   if (patch.urgencia && !current.sla_vence && !patch.sla_vence) {
     set.sla_vence = new Date(now.getTime() + SLA_MINUTES[patch.urgencia] * 60_000);
     conds.push(isNull(incident.sla_vence));

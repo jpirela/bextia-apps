@@ -2,11 +2,15 @@ import { asc, eq } from "drizzle-orm";
 import type { Db } from "../db/index.ts";
 import { booking, incident, on_call } from "../db/schema.ts";
 import type { Mailer } from "../notify/mailer.ts";
-import { logAction, recordKpi, saveIncident, StaleIncidentError, type IncidentRow } from "./store.ts";
+import { logAction, recordKpi, saveIncident, StaleIncidentError, type IncidentPatch, type IncidentRow } from "./store.ts";
 
 export interface EscalationDeps { db: Db; mailer: Mailer | null; backofficeUrl?: string | null; now?: () => Date }
 
 const MAX_STALE_RETRIES = 3;
+
+// Campos adicionales que se guardan en la misma escritura atómica del escalado. Se calculan sobre la
+// fila vigente en cada intento (tras releerla si hubo carrera). No pueden pisar los campos del escalado.
+export type EscalationExtra = (current: IncidentRow) => IncidentPatch;
 
 export async function pickOnCall(db: Db): Promise<typeof on_call.$inferSelect | null> {
   const [g] = await db.select().from(on_call).where(eq(on_call.activo, true))
@@ -18,12 +22,13 @@ export async function pickOnCall(db: Db): Promise<typeof on_call.$inferSelect | 
 // se reintenta: la guardia debe enterarse aunque se pierda la carrera. Si el ganador ya escaló o
 // cerró la incidencia, no hay nada más que hacer (quien escaló ya avisó).
 async function saveEscalated(
-  db: Db, inc: IncidentRow, guardEmail: string | null, now: Date,
+  db: Db, inc: IncidentRow, guardEmail: string | null, now: Date, extra?: EscalationExtra,
 ): Promise<{ row: IncidentRow; won: boolean }> {
   let current = inc;
   for (let attempt = 0; ; attempt++) {
     try {
       const row = await saveIncident(db, current, {
+        ...extra?.(current),
         estado: "escalado", requiere_humano: true, escalado_a: guardEmail, proximo_paso_at: null,
       }, now);
       return { row, won: true };
@@ -44,12 +49,12 @@ export async function escalateIncident(deps: EscalationDeps, inc: IncidentRow, m
 // Igual que escalateIncident, pero indica si esta llamada fue la que escaló (la ganadora).
 // Permite a quien llama avisar al viajero una sola vez.
 export async function escalateIncidentResult(
-  deps: EscalationDeps, inc: IncidentRow, motivo: string,
+  deps: EscalationDeps, inc: IncidentRow, motivo: string, extra?: EscalationExtra,
 ): Promise<{ row: IncidentRow; escalated: boolean }> {
   if (inc.estado === "escalado" || inc.estado === "cerrado") return { row: inc, escalated: false };
   const now = deps.now?.() ?? new Date();
   const guard = await pickOnCall(deps.db);
-  const { row, won } = await saveEscalated(deps.db, inc, guard?.email ?? null, now);
+  const { row, won } = await saveEscalated(deps.db, inc, guard?.email ?? null, now, extra);
   if (!won) return { row, escalated: false };
   const done = { row, escalated: true };
   await logAction(deps.db, inc.id, "escalado", { motivo, guardia: guard?.email ?? null });

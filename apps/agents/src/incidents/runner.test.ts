@@ -3,7 +3,7 @@ import { createTestDb } from "../db/test-db.ts";
 import type { Db } from "../db/index.ts";
 import { booking, contact, conversation, incident, incident_action, kpi_event, on_call } from "../db/schema.ts";
 import type { OutboundMessage } from "../channels/types.ts";
-import { seedProtocol } from "../protocols/seed.ts";
+import { loadDefaultDefinition, seedProtocol } from "../protocols/seed.ts";
 import * as engine from "../protocols/engine.ts";
 import { escalateWithNotice, isAuthorizableAmount, runProtocol, startProtocol, type RunnerDeps } from "./runner.ts";
 import { ESCALATED_REPLY } from "./prompts.ts";
@@ -123,6 +123,7 @@ describe("runner", () => {
     expect(row).toMatchObject({ estado: "escalado", proximo_paso_at: null });
     expect(traveler()).toEqual([ESCALATED_REPLY]);
     expect((await db.select().from(incident_action)).find((a) => a.tipo === "escalado")?.detalle).toMatchObject({ motivo: "proveedor_envio_fallido" });
+    expect((await reload(inc.id)).protocolo_estado).toMatchObject({ terminado: true });
   });
 
   it("servicio no verificable → el motor escala", async () => {
@@ -231,6 +232,54 @@ describe("runner", () => {
       expect(rows.map((r) => r.estado)).toEqual(["protocolo", "protocolo"]);
       expect(provider()).toHaveLength(1);
       expect(traveler()).toHaveLength(1);
+    });
+
+    it("protocolo sin feedback (autorizar → taxi → escalar): dos vencimientos simultáneos → una sola autorización", async () => {
+      const def = loadDefaultDefinition() as { pasos: Record<string, Record<string, unknown>> };
+      def.pasos.confirmar_taxi = { ...def.pasos.confirmar_taxi, siguiente: "escalar" };
+      await seedProtocol(db, { tope: 40, moneda: "EUR", def });
+      const { inc, t } = await seed();
+      const started = await startProtocol(deps(), inc, "traslado_no_presentado", t);
+      const d = deps({ now: () => new Date("2026-11-08T10:21:00Z") });
+      await Promise.all([
+        runProtocol(d, started, { tipo: "vencimiento" }, t),
+        runProtocol(d, started, { tipo: "vencimiento" }, t),
+      ]);
+      // El perdedor devuelve la fila releída en el momento de perder; el estado final lo fija el ganador.
+      expect((await reload(inc.id)).estado).toBe("escalado");
+      expect((await actionTypes()).filter((x) => x === "autorizacion")).toHaveLength(1);
+      expect((await kpiTypes()).filter((x) => x === "gasto_autorizado")).toHaveLength(1);
+      expect(traveler().filter((x) => x.includes("taxi oficial"))).toHaveLength(1);
+      expect(traveler().filter((x) => x === ESCALATED_REPLY)).toHaveLength(1);
+    });
+
+    it("avance con efectos que no cambia protocolo_estado (sin cerrojo) → escala sin efectos", async () => {
+      await seedProtocol(db, { tope: 40, moneda: "EUR" });
+      const { inc, t } = await seed();
+      const started = await startProtocol(deps(), inc, "traslado_no_presentado", t);
+      vi.mocked(engine.advance).mockImplementationOnce((_def, state) => ({
+        state: { ...state! },
+        actions: [{ tipo: "autorizar", monto: 40, concepto: "taxi" }, { tipo: "enviar_viajero", texto: "taxi" }],
+      }));
+      const row = await runProtocol(deps({ now: () => new Date("2026-11-08T10:21:00Z") }), started, { tipo: "vencimiento" }, t);
+      expect(row.estado).toBe("escalado");
+      expect(traveler()).toEqual([ESCALATED_REPLY]);
+      expect(await actionTypes()).not.toContain("autorizacion");
+      expect((await db.select().from(incident_action)).find((a) => a.tipo === "escalado")?.detalle).toMatchObject({ motivo: "estado_sin_cambio" });
+    });
+
+    it("dos runProtocol(inicio) directos simultáneos → un solo contacto al proveedor", async () => {
+      const { id } = await seedProtocol(db, { tope: 40, moneda: "EUR" });
+      const { inc, t } = await seed();
+      const ready = await saveIncident(db, inc, { estado: "protocolo", protocol_id: id }, now);
+      const d = deps();
+      await Promise.all([
+        runProtocol(d, ready, { tipo: "inicio" }, t),
+        runProtocol(d, ready, { tipo: "inicio" }, t),
+      ]);
+      expect(provider()).toHaveLength(1);
+      expect(traveler()).toHaveLength(1);
+      expect((await actionTypes()).filter((x) => x === "decision")).toHaveLength(1);
     });
 
     it("fila en memoria desfasada (otro proceso ya avanzó) → relee y no repite efectos", async () => {
