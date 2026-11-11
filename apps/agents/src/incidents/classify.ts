@@ -9,7 +9,8 @@ const norm = (t: string) => t.normalize("NFD").replace(/\p{Diacritic}/gu, "").to
 const EMERGENCY_STEMS = [
   "emergencia", "emergency", "ambulancia", "ambulance", "herid", "injur", "ferid", "accidente", "accident",
   "infarto", "heart attack", "inconsciente", "unconscious", "desmay", "desmai", "sangr", "bleed",
-  "robo", "robaron", "robbed", "robbery", "roubad", "asalt", "assalt", "mugged", "agresi", "attacked",
+  "robo\\b", "robaron", "robad", "robar", "robbed", "robbery", "stolen", "roubad", "asalt", "assalt", "mugged",
+  "agresi", "attacked", "atac", "acident", "choque", "secuestr", "overdos", "convuls",
   "policia", "police", "incendio", "fire", "socorro",
 ];
 const EMERGENCY_RE = new RegExp(`\\b(${EMERGENCY_STEMS.join("|")})`);
@@ -66,7 +67,8 @@ const SYSTEM = [
 ].join("\n");
 
 export async function classifyIncident(llm: Llm, history: Turn[]): Promise<IncidentClass | null> {
-  const r = await llm.classify<IncidentClass>({ system: SYSTEM, input: buildTranscript(history), jsonSchema: JSON_SCHEMA, fields: FIELDS });
+  const input = `<conversacion>\n${buildTranscript(history)}\n</conversacion>`;
+  const r = await llm.classify<IncidentClass>({ system: SYSTEM, input, jsonSchema: JSON_SCHEMA, fields: FIELDS });
   return r.ok ? r.value : null;
 }
 
