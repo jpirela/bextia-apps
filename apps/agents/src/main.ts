@@ -55,7 +55,7 @@ if (!env.anthropicApiKey) console.warn("ANTHROPIC_API_KEY ausente: el Agente 1 r
 const kb = env.embed ? createPgvectorKb(db, createSupabaseEmbedder(env.embed)) : createStaticKb([]);
 if (!env.embed) console.warn("SUPABASE_URL/EMBED_SECRET ausentes: FAQs sin base de conocimiento");
 
-const sendVia = (msg: OutboundMessage) => {
+const sendVia = async (msg: OutboundMessage) => {
   const ch = channels[msg.channel];
   if (!ch) throw new Error(`canal ${msg.channel} no configurado`);
   return ch.send(msg);
@@ -85,7 +85,8 @@ const pipeline = createPipeline({
 startInterval(() => deliverDue(delivery), 15 * 60_000, "entrega-leads");
 const runner = { db, send: sendVia, now: () => new Date(), mailer, backofficeUrl: env.backofficeUrl, providerChannels };
 startInterval(() => runDueTimers(runner), 60_000, "incidencias-temporizadores");
-startInterval(async () => { await escalateOverdue(runner); await closeStale(db, new Date()); }, 60_000, "incidencias-sla");
+startInterval(() => escalateOverdue(runner), 60_000, "incidencias-sla");
+startInterval(() => closeStale(db, new Date()), 60_000, "incidencias-inactividad");
 
 const app = createApp({
   apiToken: env.apiToken,
