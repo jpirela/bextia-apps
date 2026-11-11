@@ -1,4 +1,4 @@
-import { Hono } from "hono";
+import { Hono, type Context, type Next } from "hono";
 import { cors } from "hono/cors";
 import type { ContentfulStatusCode } from "hono/utils/http-status";
 import type { Channel, ChannelAdapter, InboundMessage, OutboundMessage } from "../channels/types.ts";
@@ -6,6 +6,7 @@ import { InvalidPayloadError, safeEqual, SignatureError } from "../channels/erro
 import { verifyWhatsAppSubscription } from "../channels/whatsapp.ts";
 import type { InboundOutcome } from "./pipeline.ts";
 import type { RateLimiter } from "./rate-limit.ts";
+import { registerWidgetRoutes, type WidgetDeps } from "./widget-routes.ts";
 
 export type RouteHandler = (body: Record<string, unknown>) => Promise<{ status: number; body: unknown }>;
 
@@ -18,6 +19,7 @@ export interface AppDeps {
   ipLimiter: RateLimiter;
   whatsappVerifyToken?: string;
   simulator?: { outbox: OutboundMessage[] };
+  widget?: WidgetDeps; // widget web (P15): OTP + token
 }
 
 export function createApp(deps: AppDeps): Hono {
@@ -47,14 +49,17 @@ export function createApp(deps: AppDeps): Hono {
     return c.json(result.body as object, result.status as ContentfulStatusCode);
   });
 
-  app.use("/webhooks/*", async (c, next) => {
+  const ipGuard = async (c: Context, next: Next) => {
     // Render agrega la IP real del cliente al final de x-forwarded-for; los saltos anteriores los controla el cliente.
     const hops = (c.req.header("x-forwarded-for") ?? "").split(",").map((s) => s.trim()).filter(Boolean);
     const conn = (c.env as { incoming?: { socket?: { remoteAddress?: string } } } | undefined)?.incoming?.socket?.remoteAddress;
     const ip = hops.at(-1) ?? conn ?? "unknown";
     if (!deps.ipLimiter.hit(ip)) return c.json({ error: "rate_limited" }, 429);
     await next();
-  });
+  };
+  app.use("/webhooks/*", ipGuard);
+  app.use("/widget/*", ipGuard);
+  if (deps.widget) registerWidgetRoutes(app, deps.widget);
 
   app.get("/webhooks/whatsapp", (c) => {
     const challenge = verifyWhatsAppSubscription(new URL(c.req.url).searchParams, deps.whatsappVerifyToken ?? "");
