@@ -1,9 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { Hono } from "hono";
 import { HTTPException } from "hono/http-exception";
-import { generateKeyPairSync } from "node:crypto";
-import { sign } from "hono/utils/jwt/jwt";
-import { verifyJwt, supabaseAuthConfig, type AuthConfig } from "./jwt.ts";
+import { decodeHeader, sign } from "hono/utils/jwt/jwt";
+import { verifyJwt, supabaseAuthConfig, JWKS_TTL_MS, type AuthConfig } from "./jwt.ts";
 import { attachUser, requireRole, userFromClaims, type AuthEnv } from "./roles.ts";
 import { createTestAuth, TEST_ISSUER } from "./test-keys.ts";
 
@@ -71,6 +70,60 @@ describe("userFromClaims / supabaseAuthConfig", () => {
   });
 });
 
-it("las claves de prueba son ES256 (P-256)", () => {
-  expect(generateKeyPairSync("ec", { namedCurve: "P-256" }).publicKey.asymmetricKeyDetails?.namedCurve).toBe("prime256v1");
+it("las claves de prueba firman ES256 con el kid publicado", async () => {
+  const t = await createTestAuth();
+  const h = decodeHeader(await t.tokenFor("admin"));
+  expect(h.alg).toBe("ES256");
+  expect(h.kid).toBe(t.config.keys?.[0]?.kid);
+});
+
+describe("JWKS remoto con caché", () => {
+  const URI = "https://test.supabase.co/auth/v1/.well-known/jwks.json";
+  async function setup() {
+    const t = await createTestAuth();
+    let clock = 1_000_000;
+    let falla = false;
+    let llamadas = 0;
+    const fetchStub = (async () => {
+      llamadas++;
+      if (falla) throw new Error("red caída");
+      return new Response(JSON.stringify({ keys: t.config.keys }), { status: 200 });
+    }) as unknown as typeof fetch;
+    const cfg: AuthConfig = { jwksUri: URI, issuer: TEST_ISSUER, fetch: fetchStub, now: () => clock };
+    return {
+      t, a: app(cfg),
+      avanzar: (ms: number) => { clock += ms; },
+      fallar: () => { falla = true; },
+      llamadas: () => llamadas,
+    };
+  }
+
+  it("cachea el JWKS durante el TTL y lo refresca al vencer", async () => {
+    const s = await setup();
+    const tok = await s.t.tokenFor("admin");
+    expect((await s.a.request("/me", bearer(tok))).status).toBe(200);
+    expect((await s.a.request("/me", bearer(tok))).status).toBe(200);
+    expect(s.llamadas()).toBe(1);
+    s.avanzar(JWKS_TTL_MS + 1);
+    expect((await s.a.request("/me", bearer(tok))).status).toBe(200);
+    expect(s.llamadas()).toBe(2);
+  });
+
+  it("si el refresco falla con caché previa, sigue verificando con las claves viejas", async () => {
+    const s = await setup();
+    const tok = await s.t.tokenFor("operador");
+    expect((await s.a.request("/me", bearer(tok))).status).toBe(200);
+    s.fallar();
+    s.avanzar(JWKS_TTL_MS + 1);
+    expect((await s.a.request("/me", bearer(tok))).status).toBe(200);
+    expect(s.llamadas()).toBe(2);
+  });
+
+  it("sin caché y con el fetch caído responde 401 unauthorized", async () => {
+    const s = await setup();
+    s.fallar();
+    const res = await s.a.request("/me", bearer(await s.t.tokenFor("admin")));
+    expect(res.status).toBe(401);
+    expect(await res.json()).toEqual({ error: "unauthorized" });
+  });
 });

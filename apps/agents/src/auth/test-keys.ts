@@ -19,5 +19,5 @@ export async function createTestAuth() {
       app_metadata: role ? { role } : {}, ...over,
     }, priv, "ES256");
   }
-  return { config, tokenFor, privateJwk: priv };
+  return { config, tokenFor };
 }
