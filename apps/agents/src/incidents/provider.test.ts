@@ -8,7 +8,7 @@ describe("parseEtaRegex", () => {
     ["media hora", 30], ["una hora", 60], ["em meia hora", 30],
     ["una hora y media", 90], ["1 hora y media", 90], ["an hour and a half", 90], ["uma hora e meia", 90],
   ])("%s → %s", (t, n) => expect(parseEtaRegex(t)).toBe(n));
-  it.each(["ya vamos", "el conductor está en camino", "habitación 204 del hotel", "0 min", "601 min"])("%s → null", (t) => {
+  it.each(["ya vamos", "el conductor está en camino", "habitación 204 del hotel", "0 min", "601 min", "20 min, 5 min"])("%s → null", (t) => {
     expect(parseEtaRegex(t)).toBeNull();
   });
 });
@@ -63,29 +63,46 @@ describe("rechazo explícito: sin LLM", () => {
   });
 });
 
-describe("negaciones van al LLM, nunca a ETA por regex", () => {
+describe("fuera del allowlist: sin ETA por regex, el LLM decide", () => {
   it.each([
-    "No llegaremos en 20 min", "No podremos llegar en 15 min", "Não conseguimos chegar em 20 min",
+    "don't, 20 min", "isn't possible, 20 min", "sin poder llegar, 20 min", "ninguno disponible, 20 min",
+    "nope, 20 min", "unavailable, 20 min", "sem carro, 20 min", "anulamos, 20 min", "declined 20 min",
+    "rechazo, 20 min", "No llegaremos en 20 min", "No podremos llegar en 15 min", "Não conseguimos chegar em 20 min",
     "we won't make it in 20 min", "not available, 30 min", "No llegamos en 20 min", "Unable to attend",
-  ])("%s → LLM decide (rechazo)", async (t) => {
+    "Llegamos en 20 min, sin cancelaciones", "no hay ninguna cancelación",
+  ])("%s → LLM llamado una vez; rechazo del LLM se respeta", async (t) => {
     const llm = createScriptedLlm({ classify: [{ ok: true, value: { tipo: "rechazo", minutos: null } }] });
     expect(await parseProviderReply(llm, t)).toEqual({ tipo: "rechazo" });
     expect(llm.calls.classify).toHaveLength(1);
   });
-  it("«no hay ninguna cancelación» no es rechazo por cancel", async () => {
+  it("«no hay ninguna cancelación»: el LLM decide, no cancel por regex", async () => {
     const llm = createScriptedLlm({ classify: [{ ok: true, value: { tipo: "desconocido", minutos: null } }] });
     expect(await parseProviderReply(llm, "no hay ninguna cancelación")).toEqual({ tipo: "desconocido" });
     expect(llm.calls.classify).toHaveLength(1);
   });
 });
 
-describe("controles", () => {
+describe("rechazo por REJECT_RE antes del allowlist (sin LLM)", () => {
+  it.each(["can’t 20 min", "impossible, 20 min", "impossível, 20 min"])("%s → rechazo sin LLM", async (t) => {
+    const llm = createScriptedLlm({});
+    expect(await parseProviderReply(llm, t)).toEqual({ tipo: "rechazo" });
+    expect(llm.calls.classify).toHaveLength(0);
+  });
+});
+
+describe("controles con allowlist: ETA sin LLM", () => {
   it.each([
     ["Llegamos en 20 min", 20],
-    ["Llegamos en 20 min, sin cancelaciones", 20],
+    ["Ok, en camino, 15 minutos", 15],
+    ["We'll be there in 20 min", 20],
+    ["on our way, 20 min", 20],
+    ["Chegamos em 20 min", 20],
+    ["hora y media", 90],
     ["una hora y media", 90],
   ])("%s → eta %s sin LLM", async (t, n) => {
-    expect(await parseProviderReply(createScriptedLlm({}), t)).toEqual({ tipo: "eta", minutos: n });
+    const llm = createScriptedLlm({});
+    expect(await parseProviderReply(llm, t)).toEqual({ tipo: "eta", minutos: n });
+    expect(llm.calls.classify).toHaveLength(0);
   });
 });
 
