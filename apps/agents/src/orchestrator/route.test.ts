@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { createTestDb } from "../db/test-db.ts";
-import { booking, business_hours, contact } from "../db/schema.ts";
+import { booking, business_hours, contact, conversation, incident } from "../db/schema.ts";
 import type { Db } from "../db/index.ts";
 import { route } from "./route.ts";
 
@@ -26,7 +26,7 @@ describe("route", () => {
   it("sin viaje activo va a leads y detecta fuera de horario", async () => {
     const c = await newContact("+34600000001");
     const d = await route(db, { contact: c, at: mondayNight, defaultMarket: "ES" });
-    expect(d).toEqual({ agent: "leads", market: "ES", withinHours: false, bookingId: null });
+    expect(d).toEqual({ agent: "leads", market: "ES", withinHours: false, bookingId: null, verified: false, providerIncidentId: null });
   });
 
   it("dentro de horario lo marca", async () => {
@@ -72,5 +72,54 @@ describe("route", () => {
     const c = await newContact("+5215500000000");
     const d = await route(db, { contact: c, at: mondayMorning, defaultMarket: "MX" });
     expect(d.withinHours).toBe(false);
+  });
+});
+
+describe("ruteo agente 2", () => {
+  const at = new Date("2026-11-10T12:00:00Z");
+  async function activeBooking(extra: Partial<typeof booking.$inferInsert> = {}) {
+    const [b] = await db.insert(booking).values({
+      codigo: "BX-1001", viajero_nombre: "Ana García", destino: "Lisboa",
+      inicio: new Date("2026-11-08T00:00:00Z"), fin: new Date("2026-11-15T00:00:00Z"), ...extra,
+    }).returning();
+    return b;
+  }
+
+  it("reserva activa por contacto → verificado", async () => {
+    const b = await activeBooking({ viajero_telefono: "+34600000001" });
+    const c = await newContact("+34600000001");
+    expect(await route(db, { contact: c, at, defaultMarket: "ES" }))
+      .toMatchObject({ agent: "incidents", bookingId: b.id, verified: true, providerIncidentId: null });
+  });
+
+  it("código de reserva en el texto → no verificado; reserva inactiva → leads", async () => {
+    const b = await activeBooking();
+    const c = await newContact("+34600000009");
+    expect(await route(db, { contact: c, at, defaultMarket: "ES", text: "Mi reserva es BX-1001, nadie vino" }))
+      .toMatchObject({ agent: "incidents", bookingId: b.id, verified: false });
+    expect(await route(db, { contact: c, at: new Date("2026-12-01T00:00:00Z"), defaultMarket: "ES", text: "BX-1001" }))
+      .toMatchObject({ agent: "leads", bookingId: null });
+  });
+
+  it("incidencia abierta en la conversación manda sobre todo lo demás", async () => {
+    const b = await activeBooking();
+    const c = await newContact("+34600000009");
+    const [conv] = await db.insert(conversation).values({ contact_id: c.id, canal: "sim" }).returning();
+    await db.insert(incident).values({ booking_id: b.id, conversation_id: conv.id, estado: "identificando" });
+    expect(await route(db, { contact: c, at, defaultMarket: "ES", text: "García", conversationId: conv.id }))
+      .toMatchObject({ agent: "incidents", bookingId: b.id, verified: false });
+    await db.update(incident).set({ estado: "clasificando" });
+    expect(await route(db, { contact: c, at, defaultMarket: "ES", text: "García", conversationId: conv.id }))
+      .toMatchObject({ verified: true });
+  });
+
+  it("mensaje del proveedor contactado → providerIncidentId", async () => {
+    const b = await activeBooking();
+    const [inc] = await db.insert(incident).values({ booking_id: b.id, estado: "protocolo", proveedor_contacto: "+351910000000" }).returning();
+    const prov = await newContact("+351910000000");
+    expect(await route(db, { contact: prov, at, defaultMarket: "ES", text: "Llego en 10 min" }))
+      .toMatchObject({ agent: "incidents", providerIncidentId: inc.id, bookingId: b.id, verified: false });
+    await db.update(incident).set({ estado: "seguimiento" });
+    expect(await route(db, { contact: prov, at, defaultMarket: "ES", text: "ok" })).toMatchObject({ agent: "leads" });
   });
 });

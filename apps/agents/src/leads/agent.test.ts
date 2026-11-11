@@ -166,7 +166,7 @@ describe("toMessageParams", () => {
     await agent({
       msg: inbound("z", "x"),
       ingest: { duplicate: false, contact: {} as never, conversationId: "00000000-0000-0000-0000-000000000000", messageId: null },
-      decision: { agent: "incidents", market: "ES", withinHours: false, bookingId: "b" },
+      decision: { agent: "incidents", market: "ES", withinHours: false, bookingId: "b", verified: true, providerIncidentId: null },
     });
     expect(send).not.toHaveBeenCalled();
     expect(llm.calls.classify).toHaveLength(0);

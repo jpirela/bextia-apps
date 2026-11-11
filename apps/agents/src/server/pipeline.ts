@@ -39,7 +39,10 @@ export function createPipeline(deps: PipelineDeps): (msg: InboundMessage) => Pro
     const ing = await ingest(deps.db, msg);
     if (ing.duplicate) return { status: "duplicate", conversationId: ing.conversationId };
     if (!deps.contactLimiter.hit(ing.contact.id)) return { status: "rate_limited", conversationId: ing.conversationId };
-    const decision = await route(deps.db, { contact: ing.contact, at: msg.receivedAt, defaultMarket: deps.defaultMarket });
+    const decision = await route(deps.db, {
+      contact: ing.contact, at: msg.receivedAt, defaultMarket: deps.defaultMarket,
+      text: msg.text, conversationId: ing.conversationId,
+    });
     await deps.db.insert(kpi_event).values({
       tipo: "mensaje_recibido", agente: decision.agent, canal: msg.channel, ref_id: ing.conversationId,
       datos: { withinHours: decision.withinHours, market: decision.market },
