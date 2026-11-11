@@ -66,6 +66,28 @@ describe("reply", () => {
     });
   });
 
+  it("si el canal entregó y la traza en BD falla, devuelve true y no reenvía", async () => {
+    const { conv, inc } = await seed();
+    let calls = 0;
+    const failingDb = new Proxy(db, { get: (o, p) => (p === "insert" ? () => { throw new Error("bd caída"); } : Reflect.get(o, p)) }) as Db;
+    const io = { db: failingDb, now: () => now, send: async () => { calls++; return { externalId: "x-9" }; } };
+    const t = { channel: "sim" as const, to: {}, conversationId: conv.id };
+    expect(await sendTraveler(io, t, inc.id, "Hola")).toBe(true);
+    expect(calls).toBe(1);
+  });
+
+  it("loadHistory desempata de forma estable mensajes con el mismo timestamp", async () => {
+    const { conv } = await seed();
+    const at = new Date("2026-11-08T10:00:00Z");
+    await db.insert(message).values([
+      { conversation_id: conv.id, canal: "sim", direccion: "out", contenido: "a", external_id: "a", created_at: at },
+      { conversation_id: conv.id, canal: "sim", direccion: "out", contenido: "b", external_id: "b", created_at: at },
+    ]);
+    const first = await loadHistory(db, conv.id);
+    expect(first).toHaveLength(2);
+    expect(await loadHistory(db, conv.id)).toEqual(first);
+  });
+
   it("loadHistory devuelve los turnos en orden cronológico", async () => {
     const { conv } = await seed();
     await db.insert(message).values([
