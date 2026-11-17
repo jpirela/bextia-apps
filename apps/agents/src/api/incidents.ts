@@ -2,6 +2,8 @@ import { Hono } from "hono";
 import { and, asc, desc, eq, gte, lt, sql, type SQL } from "drizzle-orm";
 import { booking, incident, incident_action, message, type IncidentState, type IncidentType, type IncidentUrgency } from "../db/schema.ts";
 import { requireRole, type AuthEnv } from "../auth/roles.ts";
+import type { Db } from "../db/index.ts";
+import { canTransition, InvalidTransitionError, logAction, saveIncident, StaleIncidentError } from "../incidents/store.ts";
 import { dateParam, invalid, notFound, readJson, UUID_RE, type Issue } from "./http.ts";
 import type { ApiDeps } from "./index.ts";
 
@@ -56,10 +58,10 @@ export function incidentsRoutes(deps: ApiDeps): Hono<AuthEnv> {
     const [row] = await base(eq(incident.id, incId));
     if (!row) return notFound(c);
     const acciones = await deps.db.select({ tipo: incident_action.tipo, detalle: incident_action.detalle, monto: incident_action.monto, created_at: incident_action.created_at })
-      .from(incident_action).where(eq(incident_action.incident_id, incId)).orderBy(asc(incident_action.created_at));
+      .from(incident_action).where(eq(incident_action.incident_id, incId)).orderBy(asc(incident_action.created_at), asc(incident_action.id));
     const conversacion = row.conversation_id
       ? await deps.db.select({ direccion: message.direccion, contenido: message.contenido, created_at: message.created_at })
-        .from(message).where(eq(message.conversation_id, row.conversation_id)).orderBy(asc(message.created_at))
+        .from(message).where(eq(message.conversation_id, row.conversation_id)).orderBy(asc(message.created_at), asc(message.id))
       : [];
     const { conversation_id: _c, ...rest } = row;
     return c.json({ ...rest, acciones, conversacion });
@@ -78,34 +80,59 @@ export function incidentsRoutes(deps: ApiDeps): Hono<AuthEnv> {
     // La nota puede contener PII: se guarda en detalle y nunca se loguea.
     const notaDet = typeof nota === "string" && nota.trim() ? { nota: nota.trim() } : {};
 
-    const [cur] = await deps.db.select().from(incident).where(eq(incident.id, incId));
-    if (!cur) return notFound(c);
     const user = c.get("user");
-
-    if (accion === "cerrar") {
-      if (cur.estado === "cerrado") return c.json(cur);
-      const [row] = await deps.db.update(incident).set({ estado: "cerrado", cerrado_at: now(), requiere_humano: false }).where(eq(incident.id, incId)).returning();
-      await deps.db.insert(incident_action).values({ incident_id: incId, tipo: "resultado", detalle: { cierre: user.role, ...notaDet } });
-      return c.json(row);
-    }
-    if (cur.estado === "cerrado") return c.json({ error: "closed" }, 409);
-
-    if (accion === "tomar") {
-      const [row] = await deps.db.update(incident).set({ estado: "escalado", escalado_a: user.email, requiere_humano: true }).where(eq(incident.id, incId)).returning();
-      await deps.db.insert(incident_action).values({ incident_id: incId, tipo: "escalado", detalle: { por: user.role, ...notaDet } });
-      return c.json(row);
+    // M3: sin email no hay responsable al que escalar.
+    if (accion === "tomar" && !user.email) return invalid(c, [{ field: "email", code: "required", message: "el token no trae email" }]);
+    // M6: se valida en céntimos, ya redondeado, para que 0,004 no pase como "0.00".
+    let cents = 0;
+    if (accion === "reembolso") {
+      const monto = body?.monto;
+      cents = typeof monto === "number" && Number.isFinite(monto) ? Math.round(monto * 100) : 0;
+      if (cents < 1) return invalid(c, [{ field: "monto", code: "min", message: "monto mayor que 0" }]);
     }
 
-    // reembolso (P34): solo hasta lo autorizado por el protocolo o el operador.
-    const monto = body?.monto;
-    if (typeof monto !== "number" || !Number.isFinite(monto) || monto <= 0) return invalid(c, [{ field: "monto", code: "min", message: "monto mayor que 0" }]);
-    const [auth] = await deps.db.select({ monto: incident_action.monto }).from(incident_action)
-      .where(and(eq(incident_action.incident_id, incId), eq(incident_action.tipo, "autorizacion")))
-      .orderBy(desc(incident_action.created_at)).limit(1);
-    if (!auth?.monto) return c.json({ error: "no_authorization" }, 409);
-    if (monto > Number(auth.monto)) return invalid(c, [{ field: "monto", code: "max", message: `máximo ${auth.monto}` }]);
-    await deps.db.insert(incident_action).values({ incident_id: incId, tipo: "resultado", monto: monto.toFixed(2), detalle: { reembolso: true, ...notaDet } });
-    return c.json(cur);
+    type Out = { status: 200 | 400 | 404 | 409; body: unknown };
+    // I1: lectura con FOR UPDATE, transición validada contra el estado leído y traza en la misma transacción.
+    const out: Out = await deps.db.transaction(async (txRaw): Promise<Out> => {
+      const tx = txRaw as unknown as Db;
+      const [cur] = await tx.select().from(incident).where(eq(incident.id, incId)).for("update");
+      if (!cur) return { status: 404, body: { error: "not_found" } };
+      if (cur.estado === "cerrado") return { status: 409, body: { error: "closed" } };
+
+      if (accion === "cerrar") {
+        const row = await saveIncident(tx, cur, { estado: "cerrado", requiere_humano: false, proximo_paso_at: null }, now());
+        await logAction(tx, incId, "resultado", { cierre: user.role, ...notaDet });
+        return { status: 200, body: row };
+      }
+
+      if (accion === "tomar") {
+        if (!canTransition(cur.estado, "escalado")) return { status: 409, body: { error: "invalid_transition", from: cur.estado } };
+        const row = await saveIncident(tx, cur, { estado: "escalado", escalado_a: user.email, requiere_humano: true, proximo_paso_at: null }, now());
+        await logAction(tx, incId, "escalado", { por: user.role, ...notaDet });
+        return { status: 200, body: row };
+      }
+
+      // reembolso (P34, I2): el acumulado de reembolsos no supera lo autorizado. El FOR UPDATE serializa.
+      const [auth] = await tx.select({ monto: incident_action.monto }).from(incident_action)
+        .where(and(eq(incident_action.incident_id, incId), eq(incident_action.tipo, "autorizacion")))
+        .orderBy(desc(incident_action.created_at), desc(incident_action.id)).limit(1);
+      if (!auth?.monto) return { status: 409, body: { error: "no_authorization" } };
+      const [{ previo }] = await tx.select({ previo: sql<string>`coalesce(sum(${incident_action.monto}), 0)` }).from(incident_action)
+        .where(and(eq(incident_action.incident_id, incId), eq(incident_action.tipo, "resultado"),
+          sql`${incident_action.detalle}->>'reembolso' = 'true'`));
+      const topeCents = Math.round(Number(auth.monto) * 100);
+      const previoCents = Math.round(Number(previo) * 100);
+      if (previoCents + cents > topeCents) {
+        const resto = (Math.max(topeCents - previoCents, 0) / 100).toFixed(2);
+        return { status: 400, body: { error: "invalid", issues: [{ field: "monto", code: "max", message: `máximo ${resto}` }] } };
+      }
+      await logAction(tx, incId, "resultado", { reembolso: true, ...notaDet }, cents / 100);
+      return { status: 200, body: cur };
+    }).catch((err: unknown): Out => {
+      if (err instanceof InvalidTransitionError || err instanceof StaleIncidentError) return { status: 409, body: { error: "conflict" } };
+      throw err;
+    });
+    return c.json(out.body as object, out.status);
   });
 
   return r;

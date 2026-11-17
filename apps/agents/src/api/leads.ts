@@ -74,7 +74,7 @@ export function leadsRoutes(deps: ApiDeps): Hono<AuthEnv> {
     if (!row) return notFound(c);
     const conversacion = row.conversation_id
       ? await deps.db.select({ direccion: message.direccion, contenido: message.contenido, created_at: message.created_at })
-        .from(message).where(eq(message.conversation_id, row.conversation_id)).orderBy(asc(message.created_at))
+        .from(message).where(eq(message.conversation_id, row.conversation_id)).orderBy(asc(message.created_at), asc(message.id))
       : [];
     return c.json({ ...shape(row), conversacion });
   });
@@ -100,7 +100,12 @@ export function leadsRoutes(deps: ApiDeps): Hono<AuthEnv> {
     }
     if (!Object.keys(set).length) return invalid(c, [{ field: "", code: "empty", message: "nada para actualizar" }]);
     // El admin salta la máquina de estados: sin esto el KPI tasaEntrega y el export quedan sin fecha (I11).
-    if (set.estado === "entregado") set.entregado_at = (deps.now ?? (() => new Date()))();
+    // M2: solo la primera entrega fija la fecha; un PATCH repetido no desplaza el KPI.
+    if (set.estado === "entregado") {
+      const [prev] = await deps.db.select({ entregado_at: lead.entregado_at }).from(lead).where(eq(lead.id, leadId));
+      if (!prev) return notFound(c);
+      if (!prev.entregado_at) set.entregado_at = (deps.now ?? (() => new Date()))();
+    }
     const [row] = await deps.db.update(lead).set(set).where(eq(lead.id, leadId)).returning();
     return row ? c.json(row) : notFound(c);
   });

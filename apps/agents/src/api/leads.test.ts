@@ -88,6 +88,8 @@ describe("PATCH /api/leads/:id", () => {
     const patched = await ok.json();
     expect(patched).toMatchObject({ sales_agent_id: caro.id, estado: "entregado" });
     expect(patched.entregado_at).toBeTruthy(); // I11: PATCH a "entregado" fija entregado_at
+    const again = await (await patch(`/api/leads/${l1.id}`, admin, { estado: "entregado" })).json();
+    expect(again.entregado_at).toBe(patched.entregado_at); // M2: no se sobrescribe
     expect((await patch(`/api/leads/${l1.id}`, admin, { estado: "raro" })).status).toBe(400);
     expect((await patch(`/api/leads/${l1.id}`, admin, { sales_agent_id: "00000000-0000-4000-8000-000000000000" })).status).toBe(400);
     expect((await patch(`/api/leads/${l1.id}`, await t.tokenFor("comercial", "beto@bextia.test"), { estado: "entregado" })).status).toBe(403);

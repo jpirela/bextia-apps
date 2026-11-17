@@ -89,12 +89,29 @@ describe("PATCH /api/incidents/:id", () => {
     expect(r).toMatchObject({ incident_id: i1.id, monto: "45.50" });
   });
 
-  it("cerrar: idempotente y bloquea tomar después", async () => {
+  it("reembolso: el acumulado no supera lo autorizado", async () => {
+    const { t, call, i1 } = await setup();
+    const op = await t.tokenFor("operador");
+    expect((await call("PATCH", `/api/incidents/${i1.id}`, op, { accion: "reembolso", monto: 40 })).status).toBe(200);
+    expect((await call("PATCH", `/api/incidents/${i1.id}`, op, { accion: "reembolso", monto: 30 })).status).toBe(400);
+    expect((await call("PATCH", `/api/incidents/${i1.id}`, op, { accion: "reembolso", monto: 0.004 })).status).toBe(400);
+    const res = await db.select().from(incident_action).where(eq(incident_action.tipo, "resultado"));
+    expect(res.map((r) => r.monto)).toEqual(["40.00"]);
+  });
+
+  it("tomar sin email en el token: 400", async () => {
+    const { t, call, i1 } = await setup();
+    expect((await call("PATCH", `/api/incidents/${i1.id}`, await t.tokenFor("operador", "x", { email: undefined }), { accion: "tomar" })).status).toBe(400);
+  });
+
+  it("cerrar: el segundo cierre da 409, una sola traza, y bloquea tomar después", async () => {
     const { t, call, i1 } = await setup();
     const op = await t.tokenFor("operador");
     const a = await call("PATCH", `/api/incidents/${i1.id}`, op, { accion: "cerrar" });
     expect(await a.json()).toMatchObject({ estado: "cerrado", cerrado_at: NOW.toISOString() });
-    expect((await call("PATCH", `/api/incidents/${i1.id}`, op, { accion: "cerrar" })).status).toBe(200);
+    const b = await call("PATCH", `/api/incidents/${i1.id}`, op, { accion: "cerrar" });
+    expect(b.status).toBe(409);
+    expect(await b.json()).toEqual({ error: "closed" });
     const res = await db.select().from(incident_action).where(eq(incident_action.tipo, "resultado"));
     expect(res).toHaveLength(1);
     expect((await call("PATCH", `/api/incidents/${i1.id}`, op, { accion: "tomar" })).status).toBe(409);
