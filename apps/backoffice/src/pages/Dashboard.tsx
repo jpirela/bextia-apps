@@ -29,7 +29,7 @@ export function Dashboard() {
       const blob = await api.download("/api/export/leads.csv", query);
       const a = Object.assign(document.createElement("a"), { href: URL.createObjectURL(blob), download: "leads.csv" });
       a.click();
-      URL.revokeObjectURL(a.href);
+      setTimeout(() => URL.revokeObjectURL(a.href), 0);
       setNotice(null);
     } catch (e) {
       setNotice(e instanceof ApiError ? `No se pudo exportar (error ${e.status})` : "No se pudo exportar");

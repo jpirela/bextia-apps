@@ -1,21 +1,9 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { Button, Input, MessageBar, Tab, TabList } from "@fluentui/react-components";
 import { CrudManager, DataView } from "krypton-ecosystem/lara/fluent";
 import { api } from "../lib/client";
 import { ApiError } from "../lib/api";
-
-type Row = { id: string } & Record<string, unknown>;
-type ViewField = { field: string; label: string; control?: "text" | "number" | "email" | "select" | "textarea" | "switch"; options?: readonly string[]; required?: boolean; hint?: string; inTable?: boolean; numeric?: boolean };
-type Spec = {
-  singular: string; gender?: "m" | "f"; fields: ViewField[];
-  /** Campos array de texto: se editan como lista separada por comas. */
-  arrays: string[];
-  /** Campo objeto (horario semanal): se edita como JSON. */
-  json: string[];
-  /** Columnas que admiten null en la API: vacío = null al editar. */
-  nullable: string[];
-  empty: () => Record<string, unknown>;
-};
+import { diffRows, toForm, toPayload, type Row, type Spec } from "../lib/crud-diff";
 
 const HORARIO_HINT = 'JSON con claves mon…sun, p. ej. {"mon":[["09:00","18:00"]]}';
 const LIST_HINT = "Separados por comas";
@@ -54,7 +42,7 @@ const SPECS: Record<string, Spec> = {
       { field: "nombre", label: "Nombre", required: true },
       { field: "email", label: "Email", control: "email", required: true },
       { field: "telefono", label: "Teléfono", hint: "Formato +34600000000" },
-      { field: "prioridad", label: "Prioridad", control: "number", numeric: true, hint: "1 a 99" },
+      { field: "prioridad", label: "Prioridad", required: true, control: "number", numeric: true, hint: "1 a 99" },
       { field: "activo", label: "Activo", control: "switch" },
     ],
     empty: () => ({ nombre: "", email: "", telefono: null, prioridad: 1, activo: true }),
@@ -64,7 +52,7 @@ const SPECS: Record<string, Spec> = {
     fields: [
       { field: "titulo", label: "Título", required: true, hint: "Hasta 200 caracteres" },
       { field: "contenido", label: "Contenido", control: "textarea", required: true, hint: "Hasta 20 000 caracteres", inTable: false },
-      { field: "idioma", label: "Idioma", control: "select", options: ["es", "en", "pt", "fr", "it", "de"] },
+      { field: "idioma", label: "Idioma", required: true, control: "select", options: ["es", "en", "pt", "fr", "it", "de"] },
       { field: "etiquetas", label: "Etiquetas", hint: LIST_HINT },
     ],
     empty: () => ({ titulo: "", contenido: "", idioma: "es", etiquetas: [] }),
@@ -81,64 +69,33 @@ const issuesText = (body: unknown): string =>
 const failText = (e: unknown): string =>
   e instanceof ApiError ? (e.status === 400 ? issuesText(e.body) : e.status === 409 ? "Ya existe un registro con esos datos" : `Error ${e.status}`) : e instanceof Error ? e.message : "Error de red";
 
-// Fila de la API → fila de formulario (arrays y JSON como texto).
-const toForm = (spec: Spec, r: Row): Row => {
-  const o: Row = { ...r };
-  for (const k of spec.arrays) o[k] = Array.isArray(r[k]) ? (r[k] as string[]).join(", ") : "";
-  for (const k of spec.json) o[k] = r[k] == null ? "" : JSON.stringify(r[k]);
-  return o;
-};
-
-// Fila de formulario → cuerpo de la API.
-function toPayload(spec: Spec, r: Row, patch: boolean): Record<string, unknown> {
-  const out: Record<string, unknown> = {};
-  for (const f of spec.fields) {
-    const k = f.field;
-    let v = r[k];
-    if (spec.arrays.includes(k)) v = String(v ?? "").split(",").map((x) => x.trim()).filter(Boolean);
-    else if (spec.json.includes(k)) {
-      const t = String(v ?? "").trim();
-      if (t === "") v = null;
-      else { try { v = JSON.parse(t); } catch { throw new Error(`${f.label}: JSON inválido`); } }
-    } else if (v === "" || v === undefined) v = null;
-    if (v === null && (!patch || !spec.nullable.includes(k))) continue; // null solo para vaciar una columna anulable al editar
-    out[k] = v;
-  }
-  return out;
-}
-
 function CrudTab({ resource }: { resource: string }) {
   const spec = SPECS[resource];
   const [rows, setRows] = useState<Row[]>([]);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
-  const server = useRef<Row[]>([]);
 
   const load = useCallback(() => api.get<{ data: Row[] }>(`/api/config/${resource}`)
-    .then((r) => { server.current = r?.data ?? []; setRows(server.current.map((x) => toForm(spec, x))); setLoadError(null); })
+    .then((r) => { // El DELETE de la API solo desactiva (sales_agent, on_call): las filas inactivas no se listan.
+      setRows((r?.data ?? []).filter((x) => x.activo !== false).map((x) => toForm(spec, x))); setLoadError(null); })
     .catch((e) => setLoadError(e instanceof ApiError ? `Error ${e.status}` : "Error de red"))
     .finally(() => setLoading(false)), [resource, spec]);
   useEffect(() => { void load(); }, [load]);
 
-  // CrudManager es controlado: entrega la lista nueva; se compara con la anterior y se aplica contra la API.
   const onChange = async (next: Row[]) => {
-    const before = new Map(rows.map((r) => [r.id, r]));
-    const nextIds = new Set(next.map((r) => r.id));
     try {
-      const removed = rows.find((r) => !nextIds.has(r.id));
-      const added = next.find((r) => !before.has(r.id));
-      const changed = next.find((r) => { const p = before.get(r.id); return p && JSON.stringify(p) !== JSON.stringify(r); });
-      if (removed) await api.send("DELETE", `/api/config/${resource}/${removed.id}`);
-      else if (added) await api.send("POST", `/api/config/${resource}`, toPayload(spec, added, false));
-      else if (changed) await api.send("PATCH", `/api/config/${resource}/${changed.id}`, toPayload(spec, changed, true));
+      const d = diffRows(rows, next);
+      if (d.op === "delete") await api.send("DELETE", `/api/config/${resource}/${d.row.id}`);
+      else if (d.op === "post") await api.send("POST", `/api/config/${resource}`, toPayload(spec, d.row, false));
+      else if (d.op === "patch") await api.send("PATCH", `/api/config/${resource}/${d.row.id}`, toPayload(spec, d.row, true));
+      else return;
       setNotice(null);
     } catch (e) {
       setNotice(failText(e));
     }
     await load();
   };
-
   return (
     <>
       {loadError && <MessageBar intent="error">{loadError}</MessageBar>}

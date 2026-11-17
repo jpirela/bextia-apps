@@ -18,7 +18,7 @@ export function Simulator() {
 
   useEffect(() => {
     let stopped = false;
-    const tick = () => api.get<OutboxItem[]>("/api/sim/outbox")
+    const tick = () => stopped ? undefined : api.get<OutboxItem[]>("/api/sim/outbox")
       .then((r) => { if (!stopped) { setOutbox(r ?? []); setLoadError(null); } })
       .catch((e) => {
         if (stopped) return;

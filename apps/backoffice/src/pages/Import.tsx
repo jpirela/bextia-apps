@@ -6,7 +6,7 @@ import { ApiError } from "../lib/api";
 import { MAX_IMPORT_BYTES, templateCsv } from "../lib/import-template";
 
 type ImportResult = { creadas: number; actualizadas: number; errores: { fila: number; field: string; message: string }[] };
-type Notice = { intent: "error" | "success"; text: string };
+type Notice = { intent: "error" | "success" | "warning"; text: string };
 
 const errorText = (e: unknown): string => {
   if (e instanceof ApiError) {
@@ -30,7 +30,7 @@ export function Import() {
     try {
       const r = await api.send<ImportResult>("POST", "/api/import/bookings", await file.text(), "text/csv");
       setResult(r);
-      setNotice(r ? { intent: "success", text: `${r.creadas} creadas, ${r.actualizadas} actualizadas` } : null);
+      setNotice(r ? { intent: r.errores.length > 0 ? "warning" : "success", text: `${r.creadas} creadas, ${r.actualizadas} actualizadas` } : null);
     } catch (e) {
       setNotice({ intent: "error", text: errorText(e) });
     } finally {
@@ -41,7 +41,7 @@ export function Import() {
   const plantilla = () => {
     const a = Object.assign(document.createElement("a"), { href: URL.createObjectURL(new Blob([templateCsv()], { type: "text/csv" })), download: "plantilla-reservas.csv" });
     a.click();
-    URL.revokeObjectURL(a.href);
+    setTimeout(() => URL.revokeObjectURL(a.href), 0);
   };
 
   return (
