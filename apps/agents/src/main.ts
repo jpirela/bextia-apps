@@ -8,7 +8,7 @@ import { createJsonChannel, createSimulatorChannel } from "./channels/json-chann
 import { createMailer, createSmtpTransport } from "./notify/mailer.ts";
 import { createRateLimiter } from "./server/rate-limit.ts";
 import { createPipeline } from "./server/pipeline.ts";
-import { createApp, type RouteHandler } from "./server/app.ts";
+import { createApp } from "./server/app.ts";
 import Anthropic from "@anthropic-ai/sdk";
 import { createAnthropicLlm } from "./llm/anthropic.ts";
 import { createUnavailableLlm } from "./llm/unavailable.ts";
@@ -23,8 +23,6 @@ import { runDueTimers, escalateOverdue, closeStale } from "./incidents/sla.ts";
 import type { Dispatch } from "./server/pipeline.ts";
 const env = readEnv(process.env);
 const db = createDb(env.databaseUrl);
-// Las rutas generadas abren su propia conexión al importarse (api/src/db/client.ts usa DATABASE_URL).
-const { routes } = await import("../../../api/src/router.ts");
 
 const mailer = env.smtp ? createMailer(createSmtpTransport(env.smtp), { from: env.smtp.from }) : null;
 if (!mailer) console.warn("SMTP_* ausentes: los leads no se entregarán por email");
@@ -89,9 +87,9 @@ startInterval(() => escalateOverdue(runner), 60_000, "incidencias-sla");
 startInterval(() => closeStale(db, new Date()), 60_000, "incidencias-inactividad");
 
 const app = createApp({
-  apiToken: env.apiToken,
+  // Provisional hasta la Task 10: sin claves, todo token es 401 (estado cerrado, no abierto).
+  auth: { keys: [] },
   corsOrigins: env.corsOrigins,
-  routes: routes as unknown as Record<string, RouteHandler>,
   channels,
   pipeline,
   ipLimiter: createRateLimiter({ limit: 120, windowMs: 60_000 }),
@@ -109,7 +107,7 @@ const app = createApp({
       await channels.whatsapp.send({ channel: "whatsapp", to: { phone: d.value }, text });
     },
   },
-  simulator: simulator ? { outbox: simulator.outbox } : undefined,
+  api: { db, pipeline, simulator },
 });
 
 serve({ fetch: app.fetch, port: env.port }, (info) => {
