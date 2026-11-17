@@ -6,6 +6,8 @@ import type { InboundOutcome } from "../server/pipeline.ts";
 import type { Embedder } from "../rag/embedder.ts";
 import { simRoutes } from "./sim.ts";
 import { importRoutes } from "./import.ts";
+import { kpiRoutes } from "./kpi.ts";
+import { exportRoutes } from "./export.ts";
 
 export interface ApiDeps {
   db: Db;
@@ -21,5 +23,7 @@ export function createApiRoutes(deps: ApiDeps): Hono<AuthEnv> {
   api.get("/me", (c) => c.json(c.get("user")));
   api.route("/sim", simRoutes(deps));
   api.route("/import", importRoutes(deps));
+  api.route("/kpi", kpiRoutes(deps));
+  api.route("/export", exportRoutes(deps));
   return api;
 }
