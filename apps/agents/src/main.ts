@@ -9,6 +9,7 @@ import { createMailer, createSmtpTransport } from "./notify/mailer.ts";
 import { createRateLimiter } from "./server/rate-limit.ts";
 import { createPipeline } from "./server/pipeline.ts";
 import { createApp } from "./server/app.ts";
+import { supabaseAuthConfig } from "./auth/jwt.ts";
 import Anthropic from "@anthropic-ai/sdk";
 import { createAnthropicLlm } from "./llm/anthropic.ts";
 import { createUnavailableLlm } from "./llm/unavailable.ts";
@@ -51,7 +52,7 @@ const llm = env.anthropicApiKey
 if (!env.anthropicApiKey) console.warn("ANTHROPIC_API_KEY ausente: el Agente 1 responderá con el mensaje de respaldo");
 
 const kb = env.embed ? createPgvectorKb(db, createSupabaseEmbedder(env.embed)) : createStaticKb([]);
-if (!env.embed) console.warn("SUPABASE_URL/EMBED_SECRET ausentes: FAQs sin base de conocimiento");
+if (!env.embed) console.warn("EMBED_SECRET ausente: FAQs sin base de conocimiento");
 
 const sendVia = async (msg: OutboundMessage) => {
   const ch = channels[msg.channel];
@@ -87,8 +88,8 @@ startInterval(() => escalateOverdue(runner), 60_000, "incidencias-sla");
 startInterval(() => closeStale(db, new Date()), 60_000, "incidencias-inactividad");
 
 const app = createApp({
-  // Provisional hasta la Task 10: sin claves, todo token es 401 (estado cerrado, no abierto).
-  auth: { keys: [] },
+  auth: supabaseAuthConfig(env.supabaseUrl), // JWKS real de Supabase Auth + issuer
+  authApi: { supabaseUrl: env.supabaseUrl, anonKey: env.supabaseAnonKey },
   corsOrigins: env.corsOrigins,
   channels,
   pipeline,

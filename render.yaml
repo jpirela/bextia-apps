@@ -23,6 +23,8 @@ services:
         sync: false
       - key: SUPABASE_URL
         sync: false
+      - key: SUPABASE_ANON_KEY
+        sync: false
       - key: EMBED_SECRET
         sync: false
       - key: LEADS_WEBHOOK_URL
@@ -31,8 +33,6 @@ services:
         sync: false
       - key: BACKOFFICE_URL
         sync: false
-      - key: API_TOKEN
-        generateValue: true
       - key: ANTHROPIC_API_KEY
         sync: false
       - key: DEFAULT_MARKET

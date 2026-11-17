@@ -49,6 +49,34 @@ describe("createApp", () => {
     expect(await res.json()).toEqual({ ok: true });
   });
 
+  it("/api/auth/* es pública y no abre el resto de /api", async () => {
+    const fetchImpl = vi.fn(async () => Response.json({
+      access_token: "a", refresh_token: "r", expires_in: 60, user: { app_metadata: { role: "admin" } },
+    }));
+    const app = createApp({ ...(await deps()), authApi: { supabaseUrl: "https://abc.supabase.co", anonKey: "k", fetchImpl: fetchImpl as never } });
+    const res = await app.request("/api/auth/login", {
+      method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ email: "a@b.co", password: "x" }),
+    });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({ role: "admin" });
+    expect((await app.request("/api/me")).status).toBe(401);
+    expect((await app.request("/api/auth/otra", { method: "POST" })).status).toBe(401);
+    expect((await createApp(await deps()).request("/api/auth/login", { method: "POST" })).status).toBe(401);
+  });
+
+  it("/api/auth/* pasa por el limitador por IP", async () => {
+    const fetchImpl = vi.fn(async () => new Response(null, { status: 204 }));
+    const app = createApp(await deps({
+      ipLimiter: createRateLimiter({ limit: 1, windowMs: 60_000 }),
+      authApi: { supabaseUrl: "https://abc.supabase.co", anonKey: "k", fetchImpl: fetchImpl as never },
+    }));
+    const logout = { method: "POST", headers: { "x-forwarded-for": "203.0.113.7" } };
+    expect((await app.request("/api/auth/logout", logout)).status).toBe(204);
+    const limited = await app.request("/api/auth/logout", logout);
+    expect(limited.status).toBe(429);
+    expect(await limited.json()).toEqual({ error: "rate_limited" });
+  });
+
   it("/api/* exige un JWT válido; health no", async () => {
     const t = await createTestAuth();
     const app = createApp({ ...(await deps()), auth: t.config });

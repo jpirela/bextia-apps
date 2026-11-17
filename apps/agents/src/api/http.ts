@@ -18,3 +18,10 @@ export function dateParam(v: string | undefined): Date | null {
 }
 
 export const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+// Render agrega la IP real del cliente al final de x-forwarded-for; los saltos anteriores los controla el cliente.
+export function clientIp(c: Context): string {
+  const hops = (c.req.header("x-forwarded-for") ?? "").split(",").map((s) => s.trim()).filter(Boolean);
+  const conn = (c.env as { incoming?: { socket?: { remoteAddress?: string } } } | undefined)?.incoming?.socket?.remoteAddress;
+  return hops.at(-1) ?? conn ?? "unknown";
+}

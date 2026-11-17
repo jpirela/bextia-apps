@@ -4,7 +4,8 @@ type Source = Record<string, string | undefined>;
 
 export interface Env {
   databaseUrl: string;
-  apiToken: string;
+  supabaseUrl: string;      // JWKS del JWT y Supabase Auth REST (login del backoffice)
+  supabaseAnonKey: string;  // clave publicable: solo la usa la API
   port: number;
   defaultMarket: string;
   corsOrigins: string[];
@@ -25,6 +26,15 @@ function required(src: Source, key: string): string {
   const v = src[key]?.trim();
   if (!v) throw new Error(`Falta la variable de entorno ${key}`);
   return v;
+}
+
+// El JWKS y las credenciales del login viajan por esta URL: solo https.
+function httpsUrl(src: Source, key: string): string {
+  const v = required(src, key);
+  let u: URL;
+  try { u = new URL(v); } catch { throw new Error(`${key} no es una URL válida`); }
+  if (u.protocol !== "https:") throw new Error(`${key} debe ser https`);
+  return v.replace(/\/+$/, "");
 }
 
 function allOrNull<K extends string>(src: Source, keys: readonly K[]): Record<K, string> | null {
@@ -48,7 +58,8 @@ export function readEnv(src: Source): Env {
   const prod = src.NODE_ENV === "production";
   return {
     databaseUrl: required(src, "DATABASE_URL"),
-    apiToken: required(src, "API_TOKEN"),
+    supabaseUrl: httpsUrl(src, "SUPABASE_URL"),
+    supabaseAnonKey: required(src, "SUPABASE_ANON_KEY"),
     port: Number(src.PORT ?? 10000),
     defaultMarket: src.DEFAULT_MARKET?.trim() || "ES",
     corsOrigins: (prod ? required(src, "CORS_ORIGINS") : src.CORS_ORIGINS ?? "").split(",").map((s) => s.trim()).filter(Boolean),
