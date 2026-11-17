@@ -8,7 +8,8 @@
     "allowImportingTsExtensions": true,
     "rewriteRelativeImportExtensions": true,
     "skipLibCheck": true,
-    "types": ["node"]
+    "types": ["node"],
+    "paths": { "postgres": ["./node_modules/postgres/types/index.d.ts"] }
   },
   "include": ["src", "drizzle.config.ts", "vitest.config.ts"]
 }
