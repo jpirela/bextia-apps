@@ -32,6 +32,6 @@ Los roles viven en `app_metadata.role`. Para asignar uno:
 update auth.users set raw_app_meta_data = raw_app_meta_data || '{"role":"admin"}' where email = 'admin@ejemplo.com';
 ```
 
-La verificación de la RLS es manual: no hay test automatizado. Se comprueba a mano en el proyecto Supabase real, entrando con cada rol.
+La verificación de la RLS tiene un test estático del SQL (`apps/agents/src/db/rls.test.ts`); la verificación contra Supabase real es manual. Se comprueba a mano en el proyecto Supabase real, entrando con cada rol.
 
 Aplicar la RLS, crear usuarios y asignar roles en el proyecto Supabase real requiere aprobación previa y no lo hace ningún script del repo.

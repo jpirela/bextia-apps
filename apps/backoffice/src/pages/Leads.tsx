@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Badge, MessageBar, Text, Textarea } from "@fluentui/react-components";
+import { Badge, Button, MessageBar, Text, Textarea, tokens } from "@fluentui/react-components";
 import { Inbox } from "krypton-ecosystem/lara/fluent";
 import { api } from "../lib/client";
 import { ApiError } from "../lib/api";
@@ -11,7 +11,7 @@ type LeadDetail = Lead & { conversacion: { direccion: string; contenido: string;
 const FOLDERS = LEAD_STATES.map((s) => ({ id: s, label: leadStateLabel(s) }));
 
 // Bandeja de solo lectura: el estado de un lead lo mueve el agente (o el admin vía API).
-export function Leads() {
+export function Leads({ initialId }: { initialId?: string }) {
   const [items, setItems] = useState<Lead[]>([]);
   const [sel, setSel] = useState<LeadDetail | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -21,11 +21,27 @@ export function Leads() {
     .catch((e) => setLoadError(e instanceof ApiError ? `Error ${e.status}` : "Error de red")), []);
   useEffect(() => { void load(); }, [load]);
   const wanted = useRef<string | null>(null);
-  const open = (l: Lead) => { wanted.current = l.id; return api.get<LeadDetail>(`/api/leads/${l.id}`).then((d) => { if (wanted.current === l.id) setSel(d); }).catch(() => setError("No se pudo abrir el lead")); };
+  const open = (id: string) => { wanted.current = id; return api.get<LeadDetail>(`/api/leads/${id}`).then((d) => { if (wanted.current === id) setSel(d); }).catch(() => setError("No se pudo abrir el lead")); };
+  // Enlace de email: el Inbox no admite selección externa, así que el lead enlazado se muestra en un panel propio.
+  const [linked, setLinked] = useState(initialId);
+  useEffect(() => { if (initialId) void open(initialId); }, [initialId]); // eslint-disable-line react-hooks/exhaustive-deps
+  const detail = (id: string) => (sel && sel.id === id
+    ? <Textarea readOnly resize="vertical" style={{ width: "100%" }} rows={14}
+        value={sel.conversacion.map((m) => `${m.direccion === "in" ? "Viajero" : "Agente"}: ${m.contenido}`).join("\n")} />
+    : <Text>Cargando…</Text>);
   return (
     <>
       {loadError && <MessageBar intent="error">{loadError}</MessageBar>}
       {error && <MessageBar intent="error">{error}</MessageBar>}
+      {linked && (
+        <div style={{ display: "grid", gap: 8, padding: 12, border: `1px solid ${tokens.colorNeutralStroke2}`, borderRadius: 4 }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+            <Text weight="semibold">Lead enlazado</Text>
+            <Button size="small" onClick={() => setLinked(undefined)}>Cerrar</Button>
+          </div>
+          {detail(linked)}
+        </div>
+      )}
       <Inbox<Lead>
         folders={FOLDERS}
         mails={items}
@@ -36,7 +52,7 @@ export function Leads() {
         isUnread={() => false}
         initialFolder="nuevo"
         searchPlaceholder="Buscar lead…"
-        onSelect={(l) => { setSel(null); void open(l); }}
+        onSelect={(l) => { setLinked(undefined); setSel(null); void open(l.id); }}
         renderItem={(l) => (
           <div style={{ display: "grid", gap: 2 }}>
             <Text weight="semibold">{l.contacto.nombre ?? "Sin nombre"} · {l.destino ?? "—"}</Text>
@@ -44,10 +60,7 @@ export function Leads() {
             <Text size={200}>{formatDate(l.created_at)} <Badge size="small">{leadStateLabel(l.estado)}{l.score != null ? ` · ${l.score}` : ""}</Badge></Text>
           </div>
         )}
-        renderDetail={(l) => (sel && sel.id === l.id
-          ? <Textarea readOnly resize="vertical" style={{ width: "100%" }} rows={14}
-              value={sel.conversacion.map((m) => `${m.direccion === "in" ? "Viajero" : "Agente"}: ${m.contenido}`).join("\n")} />
-          : <Text>Cargando…</Text>)}
+        renderDetail={(l) => detail(l.id)}
       />
     </>
   );

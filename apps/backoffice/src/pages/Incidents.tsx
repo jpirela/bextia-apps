@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Badge, Button, Dropdown, Field, Input, MessageBar, Option, Switch, Text, Textarea } from "@fluentui/react-components";
+import { Badge, Button, Dropdown, Field, Input, MessageBar, Option, Switch, Text, Textarea, tokens } from "@fluentui/react-components";
 import { Inbox } from "krypton-ecosystem/lara/fluent";
 import { api } from "../lib/client";
 import { ApiError } from "../lib/api";
@@ -18,7 +18,7 @@ type Notice = { intent: "error" | "info"; text: string };
 const FOLDERS = [{ id: "abiertas", label: "Abiertas" }, { id: "cerradas", label: "Cerradas" }];
 const folderOf = (i: Incident) => (i.estado === "cerrado" ? "cerradas" : "abiertas");
 
-export function Incidents() {
+export function Incidents({ initialId }: { initialId?: string }) {
   const [humano, setHumano] = useState(false);
   const [tipologia, setTipologia] = useState<string | undefined>();
   const [items, setItems] = useState<Incident[]>([]);
@@ -66,6 +66,34 @@ export function Incidents() {
     void load();
   };
 
+  // Enlace de email: el Inbox no admite selección externa, así que la incidencia enlazada se muestra en un panel propio.
+  const [linked, setLinked] = useState(initialId);
+  useEffect(() => { if (initialId) void open(initialId); }, [initialId]); // eslint-disable-line react-hooks/exhaustive-deps
+  const detail = (id: string) => {
+    if (!sel || sel.id !== id) return <Text>Cargando…</Text>;
+    const cerrada = sel.estado === "cerrado";
+    return (
+      <div style={{ display: "grid", gap: 12 }}>
+        <Text weight="semibold">{sel.reserva.codigo} · {sel.reserva.destino ?? "—"} · {sel.reserva.viajero_nombre ?? "—"}</Text>
+        <div>{sel.acciones.map((a, k) => (
+          <Text key={k} block size={200}>{a.tipo}{a.monto ? ` · ${a.monto}` : ""} · {formatDate(a.created_at)}</Text>
+        ))}</div>
+        <Textarea readOnly rows={10} value={sel.conversacion.map((m) => `${m.direccion === "in" ? "Viajero" : "Agente"}: ${m.contenido}`).join("\n")} />
+        <Field label="Nota (opcional)"><Textarea maxLength={500} value={nota} onChange={(_, d) => setNota(d.value)} /></Field>
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "end" }}>
+          <Button appearance="primary" disabled={cerrada} onClick={() => void act("tomar")}>Tomar</Button>
+          <Button disabled={cerrada} onClick={() => void act("cerrar")}>Cerrar</Button>
+          {puedeReembolso && (
+            <>
+              <Field label={`Monto (máx. ${maxAut})`}><Input type="number" min={0} max={maxAut} value={monto} onChange={(_, d) => setMonto(d.value)} /></Field>
+              <Button disabled={cerrada || !(Number(monto) > 0)} onClick={() => void act("reembolso", { monto: Number(monto) })}>Reembolsar</Button>
+            </>
+          )}
+        </div>
+      </div>
+    );
+  };
+
   return (
     <>
       {loadError && <MessageBar intent="error">{loadError}</MessageBar>}
@@ -77,6 +105,15 @@ export function Incidents() {
           {INCIDENT_TYPES.map((t) => <Option key={t} value={t}>{incidentTypeLabel(t)}</Option>)}
         </Dropdown>
       </div>
+      {linked && (
+        <div style={{ display: "grid", gap: 8, padding: 12, border: `1px solid ${tokens.colorNeutralStroke2}`, borderRadius: 4 }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+            <Text weight="semibold">Incidencia enlazada</Text>
+            <Button size="small" onClick={() => setLinked(undefined)}>Cerrar</Button>
+          </div>
+          {detail(linked)}
+        </div>
+      )}
       <Inbox<Incident>
         folders={FOLDERS}
         mails={items}
@@ -86,7 +123,7 @@ export function Incidents() {
         textOf={(i) => `${i.reserva.codigo} ${i.reserva.viajero_nombre ?? ""} ${i.resumen_ia ?? ""}`}
         isUnread={(i) => i.requiere_humano && i.estado !== "cerrado"}
         searchPlaceholder="Buscar incidencia…"
-        onSelect={(i) => { setSel(null); setNotice(null); void open(i.id); }}
+        onSelect={(i) => { setLinked(undefined); setSel(null); setNotice(null); void open(i.id); }}
         renderItem={(i) => {
           const sla = slaLabel(i.sla_vence, now);
           return (
@@ -97,30 +134,7 @@ export function Incidents() {
             </div>
           );
         }}
-        renderDetail={(i) => {
-          if (!sel || sel.id !== i.id) return <Text>Cargando…</Text>;
-          const cerrada = sel.estado === "cerrado";
-          return (
-            <div style={{ display: "grid", gap: 12 }}>
-              <Text weight="semibold">{sel.reserva.codigo} · {sel.reserva.destino ?? "—"} · {sel.reserva.viajero_nombre ?? "—"}</Text>
-              <div>{sel.acciones.map((a, k) => (
-                <Text key={k} block size={200}>{a.tipo}{a.monto ? ` · ${a.monto}` : ""} · {formatDate(a.created_at)}</Text>
-              ))}</div>
-              <Textarea readOnly rows={10} value={sel.conversacion.map((m) => `${m.direccion === "in" ? "Viajero" : "Agente"}: ${m.contenido}`).join("\n")} />
-              <Field label="Nota (opcional)"><Textarea maxLength={500} value={nota} onChange={(_, d) => setNota(d.value)} /></Field>
-              <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "end" }}>
-                <Button appearance="primary" disabled={cerrada} onClick={() => void act("tomar")}>Tomar</Button>
-                <Button disabled={cerrada} onClick={() => void act("cerrar")}>Cerrar</Button>
-                {puedeReembolso && (
-                  <>
-                    <Field label={`Monto (máx. ${maxAut})`}><Input type="number" min={0} max={maxAut} value={monto} onChange={(_, d) => setMonto(d.value)} /></Field>
-                    <Button disabled={cerrada || !(Number(monto) > 0)} onClick={() => void act("reembolso", { monto: Number(monto) })}>Reembolsar</Button>
-                  </>
-                )}
-              </div>
-            </div>
-          );
-        }}
+        renderDetail={(i) => detail(i.id)}
       />
     </>
   );

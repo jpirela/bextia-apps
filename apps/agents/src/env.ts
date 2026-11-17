@@ -20,8 +20,8 @@ export interface Env {
   backofficeUrl: string | null;
   scoringRules: ScoringRules;
   widgetTokenSecret: string | null;
-  importToken: string | null;       // POST /api/import/bookings; vacío desactiva la ruta
-  importEmailSecret: string | null; // POST /api/import/email; vacío desactiva la ruta
+  importToken: string | null;       // POST /import/bookings; vacío desactiva la ruta
+  importEmailSecret: string | null; // POST /import/email; vacío desactiva la ruta
 }
 
 function required(src: Source, key: string): string {

@@ -11,9 +11,12 @@ import { Incidents } from "./pages/Incidents";
 import { Config } from "./pages/Config";
 import { Import } from "./pages/Import";
 import { Simulator } from "./pages/Simulator";
+import { parseDeepLink } from "./lib/deeplink";
 
 export function App() {
   const [current, setCurrent] = useState<Session | null | undefined>(undefined);
+  // La ruta del enlace se lee una vez y se conserva hasta que el Shell la consume (tras el login).
+  const [link] = useState(() => parseDeepLink(window.location.pathname));
   useEffect(() => {
     const off = session.subscribe(setCurrent);
     // restore es idempotente y unifica refresh concurrentes (StrictMode monta el efecto dos veces).
@@ -23,8 +26,8 @@ export function App() {
   if (current === undefined) return <Spinner label="Cargando" />;
   if (!current) return <Login />;
   return (
-    <Shell role={current.role} email={current.email ?? ""} pages={{
-      dashboard: () => <Dashboard />, leads: () => <Leads />, incidents: () => <Incidents />,
+    <Shell key={current.role} role={current.role} email={current.email ?? ""} link={link} pages={{
+      dashboard: () => <Dashboard />, leads: (id) => <Leads initialId={id} />, incidents: (id) => <Incidents initialId={id} />,
       config: () => <Config />, import: () => <Import />, simulator: () => <Simulator />,
     }} />
   );
