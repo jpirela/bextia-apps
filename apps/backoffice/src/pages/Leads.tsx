@@ -15,14 +15,16 @@ export function Leads() {
   const [items, setItems] = useState<Lead[]>([]);
   const [sel, setSel] = useState<LeadDetail | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const load = useCallback(() => api.get<{ data: Lead[] }>("/api/leads")
-    .then((r) => { setItems(r?.data ?? []); setError(null); })
-    .catch((e) => setError(e instanceof ApiError ? `Error ${e.status}` : "Error de red")), []);
+    .then((r) => { setItems(r?.data ?? []); setLoadError(null); })
+    .catch((e) => setLoadError(e instanceof ApiError ? `Error ${e.status}` : "Error de red")), []);
   useEffect(() => { void load(); }, [load]);
   const wanted = useRef<string | null>(null);
   const open = (l: Lead) => { wanted.current = l.id; return api.get<LeadDetail>(`/api/leads/${l.id}`).then((d) => { if (wanted.current === l.id) setSel(d); }).catch(() => setError("No se pudo abrir el lead")); };
   return (
     <>
+      {loadError && <MessageBar intent="error">{loadError}</MessageBar>}
       {error && <MessageBar intent="error">{error}</MessageBar>}
       <Inbox<Lead>
         folders={FOLDERS}
@@ -50,5 +52,4 @@ export function Leads() {
     </>
   );
 }
-
 

@@ -24,13 +24,14 @@ export function Incidents() {
   const [items, setItems] = useState<Incident[]>([]);
   const [sel, setSel] = useState<IncidentDetail | null>(null);
   const [notice, setNotice] = useState<Notice | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [nota, setNota] = useState("");
   const [monto, setMonto] = useState("");
   const [now, setNow] = useState(() => new Date());
 
   const load = useCallback(() => api.get<{ data: Incident[] }>("/api/incidents", { requiere_humano: humano ? "true" : undefined, tipologia })
-    .then((r) => { setItems(r?.data ?? []); setNow(new Date()); setNotice((n) => (n?.intent === "error" ? null : n)); })
-    .catch((e) => setNotice({ intent: "error", text: e instanceof ApiError ? `Error ${e.status}` : "Error de red" })), [humano, tipologia]);
+    .then((r) => { setItems(r?.data ?? []); setNow(new Date()); setLoadError(null); })
+    .catch((e) => setLoadError(e instanceof ApiError ? `Error ${e.status}` : "Error de red")), [humano, tipologia]);
   useEffect(() => {
     void load();
     const h = setInterval(() => { void load(); }, 30_000);
@@ -61,11 +62,13 @@ export function Incidents() {
           : e instanceof ApiError && e.status === 400 ? ((e.body as { issues?: { message: string }[] } | null)?.issues?.[0]?.message ?? "Monto fuera de lo autorizado") : "Error" });
       }
     }
-    await open(sel.id); void load();
+    if (wanted.current === sel.id) await open(sel.id);
+    void load();
   };
 
   return (
     <>
+      {loadError && <MessageBar intent="error">{loadError}</MessageBar>}
       {notice && <MessageBar intent={notice.intent}>{notice.text}</MessageBar>}
       <div style={{ display: "flex", gap: 16, alignItems: "center" }}>
         <Switch label="Solo requieren humano" checked={humano} onChange={(_, d) => setHumano(d.checked)} />
@@ -122,5 +125,4 @@ export function Incidents() {
     </>
   );
 }
-
 

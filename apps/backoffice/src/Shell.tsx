@@ -31,4 +31,3 @@ export function Shell({ role, email, pages }: { role: Role; email: string; pages
   );
 }
 
-
