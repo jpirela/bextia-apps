@@ -17,8 +17,8 @@ const norm = (s: string) => s.normalize("NFD").replace(/\p{Diacritic}/gu, "").to
 
 export function matches(expected: EvalCase["expected"], got: Record<string, unknown> | null): string[] {
   return Object.entries(expected).flatMap(([k, want]) => {
-    const v = got?.[k];
     if (got === null) return [k];
+    const v = got[k];
     if (want === null) return v === null || v === undefined || v === "" ? [] : [k];
     if (typeof want === "string") return typeof v === "string" && norm(v).includes(norm(want)) ? [] : [k];
     return v === want ? [] : [k];
