@@ -1,9 +1,11 @@
-# Mantenido a mano: jor-cli deploy asume rootDir api (ver docs/deuda-tecnica.md).
-# Static site del backoffice y cron de SLA/resumen se agregan en los subproyectos 2–4.
+# Mantenido a mano: jor-cli deploy asume rootDir api, pero el correcto es bextia-agentes
+# (los workspaces de yarn y yarn.lock viven ahí; ver K2 en docs/deuda-tecnica.md).
+# El static site del backoffice solo se declara aquí: se crea en Render con aprobación.
 services:
   - type: web
     name: bextia-agentes-api
     runtime: node
+    rootDir: bextia-agentes
     plan: starter
     region: frankfurt
     buildCommand: yarn install --frozen-lockfile
@@ -47,6 +49,10 @@ services:
         generateValue: true
       - key: WIDGET_TOKEN_SECRET
         generateValue: true
+      - key: IMPORT_TOKEN
+        generateValue: true
+      - key: IMPORT_EMAIL_SECRET
+        generateValue: true
       - key: WHATSAPP_APP_SECRET
         sync: false
       - key: WHATSAPP_ACCESS_TOKEN
@@ -64,4 +70,25 @@ services:
       - key: SMTP_PASS
         sync: false
       - key: SMTP_FROM
+        sync: false
+
+  - type: web
+    runtime: static
+    name: bextia-backoffice
+    rootDir: bextia-agentes
+    buildCommand: yarn install --frozen-lockfile && yarn workspace @bextia/backoffice build
+    staticPublishPath: apps/backoffice/dist
+    routes:
+      - type: rewrite
+        source: /*
+        destination: /index.html
+    headers:
+      - path: /*
+        name: Content-Security-Policy
+        value: "default-src 'self'; connect-src 'self' https://bextia-agentes-api.onrender.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; frame-ancestors 'none'"
+      - path: /*
+        name: X-Frame-Options
+        value: DENY
+    envVars:
+      - key: VITE_API_URL
         sync: false

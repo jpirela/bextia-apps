@@ -27,6 +27,18 @@ describe("readEnv", () => {
     expect(readEnv(base).supabaseAnonKey).toBe("anon-test");
   });
 
+  it("IMPORT_TOKEN e IMPORT_EMAIL_SECRET son opcionales pero de al menos 32 caracteres", () => {
+    expect(readEnv(base)).toMatchObject({ importToken: null, importEmailSecret: null });
+    expect(() => readEnv({ ...base, IMPORT_TOKEN: "corto" })).toThrow(/IMPORT_TOKEN/);
+    expect(() => readEnv({ ...base, IMPORT_EMAIL_SECRET: "corto" })).toThrow(/IMPORT_EMAIL_SECRET/);
+    expect(readEnv({ ...base, IMPORT_TOKEN: "x".repeat(32) }).importToken).toBe("x".repeat(32));
+  });
+
+  it("embed usa SUPABASE_URL y solo se activa con EMBED_SECRET", () => {
+    expect(readEnv(base).embed).toBeNull();
+    expect(readEnv({ ...base, EMBED_SECRET: "e" }).embed).toEqual({ url: "https://x.supabase.co", secret: "e" });
+  });
+
   it("aplica valores por defecto y deja canales opcionales apagados", () => {
     const env = readEnv(base);
     expect(env).toMatchObject({ port: 10000, defaultMarket: "ES", corsOrigins: [], simulatorEnabled: false });

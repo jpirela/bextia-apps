@@ -51,7 +51,8 @@ const llm = env.anthropicApiKey
   : createUnavailableLlm();
 if (!env.anthropicApiKey) console.warn("ANTHROPIC_API_KEY ausente: el Agente 1 responderá con el mensaje de respaldo");
 
-const kb = env.embed ? createPgvectorKb(db, createSupabaseEmbedder(env.embed)) : createStaticKb([]);
+const embedder = env.embed ? createSupabaseEmbedder(env.embed) : null;
+const kb = embedder ? createPgvectorKb(db, embedder) : createStaticKb([]);
 if (!env.embed) console.warn("EMBED_SECRET ausente: FAQs sin base de conocimiento");
 
 const sendVia = async (msg: OutboundMessage) => {
@@ -95,6 +96,8 @@ const app = createApp({
   pipeline,
   ipLimiter: createRateLimiter({ limit: 120, windowMs: 60_000 }),
   whatsappVerifyToken: env.whatsapp?.verifyToken,
+  importToken: env.importToken,
+  importEmailSecret: env.importEmailSecret,
   widget: {
     db, tokenSecret: widgetTokenSecret,
     deliverOtp: async (d, codigo) => {
@@ -108,7 +111,7 @@ const app = createApp({
       await channels.whatsapp.send({ channel: "whatsapp", to: { phone: d.value }, text });
     },
   },
-  api: { db, pipeline, simulator },
+  api: { db, pipeline, embedder, simulator },
 });
 
 serve({ fetch: app.fetch, port: env.port }, (info) => {

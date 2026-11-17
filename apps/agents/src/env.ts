@@ -20,6 +20,8 @@ export interface Env {
   backofficeUrl: string | null;
   scoringRules: ScoringRules;
   widgetTokenSecret: string | null;
+  importToken: string | null;       // POST /api/import/bookings; vacío desactiva la ruta
+  importEmailSecret: string | null; // POST /api/import/email; vacío desactiva la ruta
 }
 
 function required(src: Source, key: string): string {
@@ -50,15 +52,23 @@ function widgetSecret(src: Source, prod: boolean): string | null {
   return v;
 }
 
+function optionalSecret(src: Source, key: string, min: number): string | null {
+  const v = src[key]?.trim() || null;
+  if (v && v.length < min) throw new Error(`${key} debe tener al menos ${min} caracteres`);
+  return v;
+}
+
 export function readEnv(src: Source): Env {
   const wa = allOrNull(src, ["WHATSAPP_APP_SECRET", "WHATSAPP_ACCESS_TOKEN", "WHATSAPP_PHONE_NUMBER_ID", "WHATSAPP_VERIFY_TOKEN"] as const);
   const smtp = allOrNull(src, ["SMTP_HOST", "SMTP_PORT", "SMTP_USER", "SMTP_PASS", "SMTP_FROM"] as const);
-  const embed = allOrNull(src, ["SUPABASE_URL", "EMBED_SECRET"] as const);
+  const databaseUrl = required(src, "DATABASE_URL");
+  const supabaseUrl = httpsUrl(src, "SUPABASE_URL");
+  const embedSecret = src.EMBED_SECRET?.trim() || null;
   const hook = allOrNull(src, ["LEADS_WEBHOOK_URL", "LEADS_WEBHOOK_SECRET"] as const);
   const prod = src.NODE_ENV === "production";
   return {
-    databaseUrl: required(src, "DATABASE_URL"),
-    supabaseUrl: httpsUrl(src, "SUPABASE_URL"),
+    databaseUrl,
+    supabaseUrl,
     supabaseAnonKey: required(src, "SUPABASE_ANON_KEY"),
     port: Number(src.PORT ?? 10000),
     defaultMarket: src.DEFAULT_MARKET?.trim() || "ES",
@@ -75,7 +85,9 @@ export function readEnv(src: Source): Env {
     },
     anthropicApiKey: prod ? required(src, "ANTHROPIC_API_KEY") : src.ANTHROPIC_API_KEY?.trim() || null,
     widgetTokenSecret: widgetSecret(src, prod),
-    embed: embed && { url: embed.SUPABASE_URL, secret: embed.EMBED_SECRET },
+    importToken: optionalSecret(src, "IMPORT_TOKEN", 32),
+    importEmailSecret: optionalSecret(src, "IMPORT_EMAIL_SECRET", 32),
+    embed: embedSecret ? { url: supabaseUrl, secret: embedSecret } : null,
     leadsWebhook: hook && { url: hook.LEADS_WEBHOOK_URL, secret: hook.LEADS_WEBHOOK_SECRET },
     backofficeUrl: src.BACKOFFICE_URL?.trim() || null,
     scoringRules: src.SCORING_RULES_JSON?.trim() ? parseScoringRules(src.SCORING_RULES_JSON) : DEFAULT_SCORING,
