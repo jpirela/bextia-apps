@@ -33,6 +33,14 @@ describe("simulador detrás del login (P12)", () => {
     expect((await app.request("/api/sim/outbox", req(await t.tokenFor("comercial")))).status).toBe(403);
   });
 
+  it("cuerpo de /send sobre 64 KB: 413 sin tocar el pipeline (M8)", async () => {
+    const { app, t, pipeline } = await setup();
+    const res = await app.request("/api/sim/send", req(await t.tokenFor("admin"), { messageId: "s-2", email: "a@b.co", name: "A", text: "x".repeat(70 * 1024) }));
+    expect(res.status).toBe(413);
+    expect(await res.json()).toEqual({ error: "payload_too_large" });
+    expect(pipeline).not.toHaveBeenCalled();
+  });
+
   it("sin simulador activo: 404; las rutas viejas ya no existen", async () => {
     const { app, t } = await setup(false);
     expect((await app.request("/api/sim/outbox", req(await t.tokenFor("admin")))).status).toBe(404);

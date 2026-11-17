@@ -25,7 +25,9 @@ export function attachUser(): MiddlewareHandler<AuthEnv> {
 
 export function requireRole(...roles: Role[]): MiddlewareHandler<AuthEnv> {
   return async (c, next) => {
-    if (!roles.includes(c.get("user").role)) return c.json({ error: "forbidden" }, 403);
+    // Sin attachUser previo no hay usuario: se falla cerrado con 403, no con un TypeError (500).
+    const user = c.get("user") as AuthUser | undefined;
+    if (!user || !roles.includes(user.role)) return c.json({ error: "forbidden" }, 403);
     await next();
   };
 }

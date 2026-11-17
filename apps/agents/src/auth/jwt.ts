@@ -13,11 +13,14 @@ export const JWKS_TTL_MS = 10 * 60 * 1000;
 export const JWKS_RETRY_MS = 30 * 1000;
 /** Refresco forzado por kid desconocido con la caché fresca: como máximo uno por ventana. */
 export const JWKS_FORCE_REFRESH_MS = 60 * 1000;
+/** Tope del fetch del JWKS: si Supabase se cuelga, se cae a las claves viejas (o 401) en vez de esperar sin límite. */
+export const JWKS_FETCH_TIMEOUT_MS = 5_000;
 
 export interface AuthConfig {
   keys?: HonoJsonWebKey[]; // tests: claves estáticas
-  jwksUri?: string;        // producción: JWKS de Supabase Auth (con caché)
+  jwksUri?: string;        // producción: JWKS de Supabase Auth (con caché); exige `issuer`
   issuer?: string;
+  jwksTimeoutMs?: number;  // tests: timeout corto del fetch del JWKS
   fetch?: typeof fetch;    // inyectable (tests sin red)
   now?: () => number;      // reloj inyectable para la caché (ms)
 }
@@ -35,22 +38,29 @@ export function supabaseAuthConfig(supabaseUrl: string): AuthConfig {
  */
 export function cachedJwks(
   uri: string,
-  opts: { fetch?: typeof fetch; now?: () => number; ttlMs?: number; retryMs?: number; forceRefreshMs?: number } = {},
+  opts: { fetch?: typeof fetch; now?: () => number; ttlMs?: number; retryMs?: number; forceRefreshMs?: number; timeoutMs?: number } = {},
 ): (kid?: string) => Promise<HonoJsonWebKey[]> {
   const doFetch = opts.fetch ?? fetch;
   const now = opts.now ?? Date.now;
   const ttl = opts.ttlMs ?? JWKS_TTL_MS;
   const retry = opts.retryMs ?? JWKS_RETRY_MS;
   const forceWindow = opts.forceRefreshMs ?? JWKS_FORCE_REFRESH_MS;
+  const timeoutMs = opts.timeoutMs ?? JWKS_FETCH_TIMEOUT_MS;
   let cached: HonoJsonWebKey[] | null = null;
   let freshUntil = 0;
   let lastForced = Number.NEGATIVE_INFINITY;
   let inflight: Promise<HonoJsonWebKey[]> | null = null;
 
   async function load(): Promise<HonoJsonWebKey[]> {
-    const res = await doFetch(uri);
+    const signal = AbortSignal.timeout(timeoutMs);
+    // Carrera explícita además del `signal`: un fetch que ignore la señal tampoco cuelga la caché.
+    const aborted = new Promise<never>((_, reject) => {
+      signal.addEventListener("abort", () => reject(new Error("JWKS timeout")), { once: true });
+    });
+    aborted.catch(() => {}); // el timer dispara aunque el fetch gane: sin rechazo no manejado
+    const res = await Promise.race([doFetch(uri, { signal }), aborted]);
     if (!res.ok) throw new Error(`JWKS HTTP ${res.status}`);
-    const data = (await res.json()) as { keys?: unknown };
+    const data = (await Promise.race([res.json(), aborted])) as { keys?: unknown };
     if (!Array.isArray(data.keys) || data.keys.length === 0) throw new Error("JWKS inválido");
     return data.keys as HonoJsonWebKey[];
   }
@@ -67,7 +77,8 @@ export function cachedJwks(
     try {
       return await inflight;
     } catch {
-      if (cached) { freshUntil = now() + retry; return cached; }
+      // max: un refresco forzado fallido (kid desconocido) no acorta una caché que seguía fresca.
+      if (cached) { freshUntil = Math.max(freshUntil, now() + retry); return cached; }
       throw new HTTPException(401, { message: "jwks unavailable" });
     }
   };
@@ -82,7 +93,10 @@ function kidOf(authorization: string | undefined): string | undefined {
 // Asimétrico únicamente: con ES256/RS256 no hay secreto compartido que filtrar.
 // `exp` obligatorio: hono solo lo valida si viene; un token sin vencimiento es 401.
 export function verifyJwt(cfg: AuthConfig): MiddlewareHandler {
-  const remote = cfg.jwksUri ? cachedJwks(cfg.jwksUri, { fetch: cfg.fetch, now: cfg.now }) : null;
+  if (cfg.jwksUri && !cfg.issuer) throw new Error("verifyJwt: jwksUri requiere issuer");
+  const remote = cfg.jwksUri
+    ? cachedJwks(cfg.jwksUri, { fetch: cfg.fetch, now: cfg.now, timeoutMs: cfg.jwksTimeoutMs })
+    : null;
   const staticKeys = cfg.keys ?? [];
   const verify = jwk({
     keys: remote ? async (c) => [...staticKeys, ...(await remote(kidOf(c.req.header("authorization"))))] : staticKeys,
