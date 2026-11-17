@@ -22,12 +22,19 @@ const tz = (v: Record<string, unknown>): Issue[] => {
   if (v.zona_horaria == null) return [];
   try { assertTimeZone(String(v.zona_horaria)); return []; } catch { return [{ field: "zona_horaria", code: "timezone", message: "zona horaria IANA inválida" }]; }
 };
+// Validación compartida de horario semanal y festivos (business_hours y sales_agent).
+const hoursIssues = (v: Record<string, unknown>): Issue[] => {
+  const issues: Issue[] = [];
+  if (v.horario !== undefined && v.horario !== null) { try { parseWeeklyHours(v.horario); } catch { issues.push({ field: "horario", code: "hours", message: "horario inválido (HH:MM)" }); } }
+  if (Array.isArray(v.festivos) && v.festivos.some((d) => typeof d !== "string" || !DATE.test(d))) issues.push({ field: "festivos", code: "date", message: "fechas YYYY-MM-DD" });
+  return issues;
+};
 const lowerEmail = (v: Record<string, unknown>) => (typeof v.email === "string" ? { ...v, email: v.email.trim().toLowerCase() } : v);
 const DATE = /^\d{4}-\d{2}-\d{2}$/;
 
 const RESOURCES: Record<string, ResourceDef> = {
   sales_agent: {
-    table: sales_agent as never, softDelete: true, normalize: lowerEmail, check: tz,
+    table: sales_agent as never, softDelete: true, normalize: lowerEmail, check: (v) => [...tz(v), ...hoursIssues(v)],
     fields: [
       { name: "nombre", type: "text", required: true, min: 1, max: 120 },
       { name: "email", type: "email", required: true },
@@ -36,6 +43,8 @@ const RESOURCES: Record<string, ResourceDef> = {
       { name: "mercados", type: "array", item: { name: "", type: "text" } },
       { name: "tipos_lead", type: "array", item: { name: "", type: "text" } },
       { name: "zona_horaria", type: "text" },
+      { name: "horario", type: "object" }, // claves mon…sun; null = jornada por omisión
+      { name: "festivos", type: "array", item: { name: "", type: "text" } },
       { name: "activo", type: "boolean" },
     ] as FieldDescriptor[],
   },
@@ -47,12 +56,7 @@ const RESOURCES: Record<string, ResourceDef> = {
       { name: "horario", type: "object", required: true }, // claves mon…sun; rangos [["HH:MM","HH:MM"]]
       { name: "festivos", type: "array", item: { name: "", type: "text" } },
     ] as FieldDescriptor[],
-    check: (v) => {
-      const issues = tz(v);
-      if (v.horario !== undefined) { try { parseWeeklyHours(v.horario); } catch { issues.push({ field: "horario", code: "hours", message: "horario inválido (HH:MM)" }); } }
-      if (Array.isArray(v.festivos) && v.festivos.some((d) => typeof d !== "string" || !DATE.test(d))) issues.push({ field: "festivos", code: "date", message: "fechas YYYY-MM-DD" });
-      return issues;
-    },
+    check: (v) => [...tz(v), ...hoursIssues(v)],
   },
   on_call: {
     table: on_call as never, softDelete: true, normalize: lowerEmail,

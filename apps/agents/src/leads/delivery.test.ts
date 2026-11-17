@@ -5,7 +5,7 @@ import type { Db } from "../db/index.ts";
 import { contact, conversation, kpi_event, lead, message, sales_agent } from "../db/schema.ts";
 import type { Mail, Mailer } from "../notify/mailer.ts";
 import { hmacSha256Hex } from "../channels/errors.ts";
-import { deliverDue, deliverLead, workdayStarted } from "./delivery.ts";
+import { agentAvailable, deliverDue, deliverLead, workdayStarted } from "./delivery.ts";
 
 let db: Db;
 let close: () => Promise<void>;
@@ -133,5 +133,20 @@ describe("deliverLead + webhook", () => {
     const ok = await deliverLead({ db, mailer: mailer(), webhook: { url: "https://hook.test", secret: "s", fetch: (async () => { throw new Error("down"); }) as unknown as typeof fetch } }, ids[0]);
     expect(ok).toBe(true);
     expect(await db.select().from(kpi_event).where(eq(kpi_event.tipo, "webhook_fallido"))).toHaveLength(1);
+  });
+});
+
+describe("agentAvailable (P19)", () => {
+  const horario = { mon: [["09:00", "13:00"]], tue: [["09:00", "13:00"]] } as never;
+  it("con horario propio: solo dentro de su franja y fuera de sus festivos", () => {
+    const a = { zona_horaria: "America/Mexico_City", horario, festivos: ["2026-11-10"] };
+    expect(agentAvailable(a, new Date("2026-11-09T16:00:00Z"))).toBe(true);   // lun 10:00 CDMX (mon)
+    expect(agentAvailable(a, new Date("2026-11-09T20:00:00Z"))).toBe(false);  // lun 14:00 CDMX
+    expect(agentAvailable(a, new Date("2026-11-10T16:00:00Z"))).toBe(false);  // mar (tue) festivo
+  });
+  it("sin horario: conserva la jornada por omisión del sp2", () => {
+    const a = { zona_horaria: "Europe/Madrid", horario: null, festivos: [] };
+    expect(agentAvailable(a, new Date("2026-11-09T09:30:00Z"))).toBe(true);   // 10:30 Madrid
+    expect(agentAvailable(a, new Date("2026-11-09T05:00:00Z"))).toBe(false);  // 06:00 Madrid
   });
 });
