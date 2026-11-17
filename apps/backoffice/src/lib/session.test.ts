@@ -197,3 +197,47 @@ describe("sessionStorage que lanza", () => {
     }
   });
 });
+
+describe("ronda 1", () => {
+  it("I1: un refresh en vuelo no resucita la sesión tras un logout", async () => {
+    let release!: (r: Response) => void;
+    const hung = new Promise<Response>((res) => { release = res; });
+    const { s, storage, timers, seen } = setup({ routes: { "/api/auth/refresh": () => hung } });
+    await s.login("ana@bextia.test", "buena");
+    const pending = s.refresh();
+    await s.logout();
+    const before = seen.length;
+    release(json(grant(AT2, "rt-2")));
+    expect(await pending).toBeNull();
+    expect(s.current()).toBeNull();
+    expect((storage as ReturnType<typeof memoryStorage>).m.has(REFRESH_KEY)).toBe(false);
+    expect(timers).toHaveLength(0);
+    expect(seen).toHaveLength(before);
+  });
+
+  it("I1: un refresh en vuelo no pisa un login nuevo", async () => {
+    let release!: (r: Response) => void;
+    const hung = new Promise<Response>((res) => { release = res; });
+    const { s, storage } = setup({ routes: { "/api/auth/refresh": () => hung } });
+    await s.login("ana@bextia.test", "buena");
+    const pending = s.refresh();
+    await s.login("ana@bextia.test", "buena");
+    release(json(grant(AT2, "rt-2")));
+    await pending;
+    expect(s.current()?.accessToken).toBe(AT1);
+    expect((storage as ReturnType<typeof memoryStorage>).m.get(REFRESH_KEY)).toBe("rt-1");
+  });
+
+  it("M1: el timer nunca se programa en 0 ms aunque expires_in sea menor que el margen", async () => {
+    const { s, timers } = setup({ routes: { "/api/auth/login": () => json({ ...grant(AT1, "rt-1"), expires_in: 30 }) } });
+    await s.login("ana@bextia.test", "buena");
+    expect(timers[0].ms).toBeGreaterThanOrEqual(5_000);
+  });
+
+  it("M4: el email con caracteres no ASCII se decodifica como UTF-8", async () => {
+    const utf8 = (o: object) => btoa(String.fromCharCode(...new TextEncoder().encode(JSON.stringify(o)))).replace(/=+$/, "").replace(/\+/g, "-").replace(/\//g, "_");
+    const at = `${b64url({ alg: "ES256" })}.${utf8({ email: "josé@bextia.test" })}.firma`;
+    const { s } = setup({ routes: { "/api/auth/login": () => json(grant(at, "rt-1")) } });
+    expect((await s.login("x@bextia.test", "buena")).email).toBe("josé@bextia.test");
+  });
+});

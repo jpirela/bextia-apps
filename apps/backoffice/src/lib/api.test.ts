@@ -85,3 +85,12 @@ describe("postJson", () => {
     await expect(postJson(cfg, "/api/auth/login", {})).rejects.toMatchObject({ status: 401, body: { error: "unauthorized" } });
   });
 });
+
+describe("respuestas sin cuerpo", () => {
+  it("204 y cuerpo vacío devuelven null sin lanzar", async () => {
+    const f = vi.fn().mockResolvedValueOnce(new Response(null, { status: 204 })).mockResolvedValueOnce(new Response("", { status: 200 }));
+    const api = createApiClient({ baseUrl: "https://api.test", getToken: async () => "tk", fetch: f as never });
+    expect(await api.send("DELETE", "/api/x/1")).toBeNull();
+    expect(await api.get("/api/y")).toBeNull();
+  });
+});

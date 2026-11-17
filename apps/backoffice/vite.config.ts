@@ -7,4 +7,6 @@ export default defineConfig({
       "lara/fluent": "krypton-ecosystem/lara/fluent",
       lara: "krypton-ecosystem/lara",
     },
-  }, plugins: [react()] });
+  },
+  plugins: [react()],
+});

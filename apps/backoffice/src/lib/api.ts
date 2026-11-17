@@ -57,11 +57,17 @@ export function createApiClient(opts: {
     if (!res.ok) throw new ApiError(res.status, await errorBody(res));
     return res;
   }
+  // 204 o cuerpo vacío: null en lugar de un SyntaxError de .json().
+  async function parse<T>(res: Response): Promise<T> {
+    if (res.status === 204) return null as T;
+    const text = await res.text();
+    return (text === "" ? null : JSON.parse(text)) as T;
+  }
   return {
-    get: async (path, query) => (await call("GET", url(path, query))).json(),
+    get: async (path, query) => parse(await call("GET", url(path, query))),
     send: async (method, path, body, contentType = "application/json") => {
       const payload = body === undefined ? undefined : contentType === "application/json" ? JSON.stringify(body) : (body as BodyInit);
-      return (await call(method, url(path), payload, body === undefined ? undefined : contentType)).json();
+      return parse(await call(method, url(path), payload, body === undefined ? undefined : contentType));
     },
     download: async (path, query) => (await call("GET", url(path, query))).blob(),
   };

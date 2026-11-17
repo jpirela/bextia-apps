@@ -32,7 +32,9 @@ function emailClaim(token: string): string | null {
   try {
     const part = token.split(".")[1];
     if (!part) return null;
-    const claims = JSON.parse(atob(part.replace(/-/g, "+").replace(/_/g, "/"))) as { email?: unknown };
+    const bin = atob(part.replace(/-/g, "+").replace(/_/g, "/"));
+    const bytes = Uint8Array.from(bin, (c) => c.charCodeAt(0));
+    const claims = JSON.parse(new TextDecoder().decode(bytes)) as { email?: unknown };
     return typeof claims.email === "string" ? claims.email : null;
   } catch {
     return null;
@@ -71,6 +73,8 @@ export function createSession(opts: {
   let refreshToken: string | null = null; // también en memoria: si sessionStorage falla, el refresh sigue andando
   let cancelTimer: (() => void) | null = null;
   let inflight: Promise<string | null> | null = null;
+  // Se incrementa en login() y clear(): un refresh que empezó en otra generación descarta su resultado.
+  let gen = 0;
 
   const store = {
     get(): string | null {
@@ -90,16 +94,19 @@ export function createSession(opts: {
     if (!g || typeof g.access_token !== "string" || typeof g.refresh_token !== "string" || typeof g.expires_in !== "number" || !isRole(g.role)) {
       throw new ApiError(502, { error: "upstream" });
     }
-    state = { accessToken: g.access_token, expiresAt: now() + g.expires_in * 1000, role: g.role, email: emailClaim(g.access_token) };
+    const expiresMs = g.expires_in * 1000;
+    state = { accessToken: g.access_token, expiresAt: now() + expiresMs, role: g.role, email: emailClaim(g.access_token) };
     refreshToken = g.refresh_token;
     store.set(g.refresh_token);
     stopTimer();
-    cancelTimer = schedule(() => { void refresh(); }, Math.max(0, g.expires_in * 1000 - skew));
+    cancelTimer = schedule(() => { void refresh(); }, Math.max(5_000, expiresMs - Math.min(skew, expiresMs / 2)));
     emit();
     return state;
   }
 
   function clear() {
+    gen += 1;
+    inflight = null;
     state = null;
     refreshToken = null;
     stopTimer();
@@ -111,10 +118,14 @@ export function createSession(opts: {
     if (inflight) return inflight;
     const rt = refreshToken ?? store.get();
     if (!rt) return Promise.resolve(null);
+    const myGen = gen;
     inflight = (async () => {
       try {
-        return apply(await postJson<Grant>(cfg, "/api/auth/refresh", { refresh_token: rt })).accessToken;
+        const grant = await postJson<Grant>(cfg, "/api/auth/refresh", { refresh_token: rt });
+        if (gen !== myGen) return null; // hubo logout o login nuevo mientras tanto: se descarta el grant
+        return apply(grant).accessToken;
       } catch (err) {
+        if (gen !== myGen) return null;
         if (err instanceof ApiError && (err.status === 400 || err.status === 401)) {
           clear();
           return null;
@@ -122,7 +133,7 @@ export function createSession(opts: {
         // Red caída o 502: se conserva el refresh token; el access token sirve mientras no venza.
         return state && now() < state.expiresAt ? state.accessToken : null;
       } finally {
-        inflight = null;
+        if (gen === myGen) inflight = null;
       }
     })();
     return inflight;
@@ -135,6 +146,8 @@ export function createSession(opts: {
       return () => { listeners.delete(fn); };
     },
     async login(email, password) {
+      gen += 1;
+      inflight = null;
       return apply(await postJson<Grant>(cfg, "/api/auth/login", { email, password }));
     },
     async restore() {
