@@ -177,6 +177,48 @@ describe("rate limit del login", () => {
     expect(lim.blocked("x")).toBe(1000); // 5 fallos (máximo por defecto) → bloqueada hasta que venza la ventana
     lim.reset("x");
     expect(lim.blocked("x")).toBe(0);
+    for (let i = 0; i < 5; i++) lim.fail("y");
+    lim.release("y"); // reserva deshecha (Supabase caído): vuelve a 4
+    expect(lim.blocked("y")).toBe(0);
+  });
+
+  it("10 logins fallidos en paralelo: Supabase recibe como máximo 5", async () => {
+    const { app, sb } = setup();
+    const res = await Promise.all(Array.from({ length: 10 }, () => app.request("/api/auth/login", login("ana.perez@bextia.test", "mala"))));
+    expect(sb.calls.length).toBeLessThanOrEqual(5);
+    expect(res.filter((r) => r.status === 401)).toHaveLength(5);
+    expect(res.filter((r) => r.status === 429)).toHaveLength(5);
+  });
+
+  it("clientIp usa el último salto de X-Forwarded-For: cambiar los anteriores no abre otra clave", async () => {
+    const { app } = setup();
+    for (let i = 0; i < 5; i++) await app.request("/api/auth/login", login("ana.perez@bextia.test", "mala", "1.1.1.1, 203.0.113.7"));
+    expect((await app.request("/api/auth/login", login("ana.perez@bextia.test", PASSWORD, "9.9.9.9, 203.0.113.7"))).status).toBe(429);
+    expect((await app.request("/api/auth/login", login("ana.perez@bextia.test", PASSWORD, "203.0.113.7"))).status).toBe(429);
+    expect((await app.request("/api/auth/login", login("ana.perez@bextia.test", PASSWORD, "1.1.1.1, 198.51.100.9"))).status).toBe(200);
+  });
+});
+
+describe("límites de tamaño", () => {
+  it("cuerpo mayor a 8 KB → 413 JSON sin llamar a Supabase", async () => {
+    const { app, sb } = setup();
+    const res = await app.request("/api/auth/login", post({ email: "ana.perez@bextia.test", password: "x".repeat(9000) }));
+    expect(res.status).toBe(413);
+    expect(await res.json()).toEqual({ error: "payload_too_large" });
+    expect(sb.calls).toHaveLength(0);
+  });
+
+  it("email patológico (ReDoS) → 400 rápido, antes de validate", async () => {
+    const { app, sb } = setup();
+    const email = `a@${".".repeat(7000)} x`;
+    const t0 = performance.now();
+    const res = await app.request("/api/auth/login", post({ email, password: "x" }));
+    expect(performance.now() - t0).toBeLessThan(50);
+    expect(res.status).toBe(400);
+    const json = await res.json();
+    expect(json.issues.map((i: { field: string }) => i.field)).toEqual(["email"]);
+    expect(JSON.stringify(json)).not.toContain("....");
+    expect(sb.calls).toHaveLength(0);
   });
 });
 

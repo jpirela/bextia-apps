@@ -1,11 +1,19 @@
+import { createHash } from "node:crypto";
 import { Hono, type Context } from "hono";
+import { bodyLimit } from "hono/body-limit";
 import { validate, type FieldDescriptor } from "@jorgepirelarivas/clark";
 import { ROLES, type Role } from "../auth/jwt.ts";
 import { clientIp, invalid, readJson } from "./http.ts";
 
+/** Tope del cuerpo de /api/auth/*: el JSON más largo legítimo (refresh_token de 4096) cabe holgado. */
+export const AUTH_BODY_LIMIT = 8 * 1024;
+/** RFC 5321: 254 caracteres. Se comprueba antes de `validate` (su regex de email es cuadrática). */
+export const EMAIL_MAX = 254;
+
 export interface LoginLimiter {
   blocked(key: string): number; // ms de bloqueo restantes; 0 = puede intentar
   fail(key: string): void;
+  release(key: string): void; // deshace un fail() reservado que no llegó a ser un fallo (Supabase caído)
   reset(key: string): void;
   size(): number;
 }
@@ -49,6 +57,12 @@ export function createLoginLimiter(opts: { maxFailures?: number; windowMs?: numb
       }
       if (entries.size >= maxEntries) sweep(t);
       entries.set(key, { count: 1, resetAt: t + windowMs });
+    },
+    release(key) {
+      const e = live(key, now());
+      if (!e) return;
+      e.count -= 1;
+      if (e.count <= 0) entries.delete(key);
     },
     reset(key) {
       entries.delete(key);
@@ -139,34 +153,46 @@ export function authRoutes(deps: AuthRoutesDeps): Hono {
   };
   const notJson = (c: Context) => invalid(c, [{ field: "body", code: "json", message: "Se esperaba un objeto JSON" }]);
 
+  // Fire-and-forget: esperar la revocación delataría (por tiempo) que el password era correcto.
+  const revokeInBackground = (token: string) => {
+    revoke(token).catch(() => undefined);
+  };
+
   const r = new Hono();
+  r.use("*", bodyLimit({ maxSize: AUTH_BODY_LIMIT, onError: (c) => c.json({ error: "payload_too_large" }, 413) }));
 
   r.post("/login", async (c) => {
     const body = await readJson(c);
     if (!body) return notJson(c);
     const input = { ...body, email: typeof body.email === "string" ? body.email.trim().toLowerCase() : body.email };
+    if (typeof input.email === "string" && input.email.length > EMAIL_MAX) {
+      return invalid(c, [{ field: "email", code: "max", message: `El email admite como máximo ${EMAIL_MAX} caracteres` }]);
+    }
     const v = validate(LOGIN_FIELDS, input, { locale: "es" });
     if (!v.ok) return invalid(c, v.issues);
     const email = input.email as string;
-    const key = `${email}|${clientIp(c)}`; // nunca se loguea
+    // Clave de tamaño fijo (el email es libre): nunca se loguea.
+    const key = createHash("sha256").update(`${email}|${clientIp(c)}`).digest("base64url");
     const wait = limiter.blocked(key);
     if (wait > 0) {
       c.header("retry-after", String(Math.ceil(wait / 1000)));
       return c.json({ error: "rate_limited" }, 429);
     }
+    // Reserva el intento antes del await: los requests concurrentes con la misma clave lo ven.
+    limiter.fail(key);
     try {
       const out = await grant("password", { email, password: body.password as string });
       if (out.kind === "ok") {
         limiter.reset(key);
         return c.json(out.grant, 200);
       }
-      limiter.fail(key);
       if (out.kind === "no_role") {
         console.warn("auth: login de un usuario sin rol válido");
-        await revoke(out.accessToken);
+        revokeInBackground(out.accessToken);
       }
       return c.json({ error: "unauthorized" }, 401);
     } catch (err) {
+      limiter.release(key); // Supabase caído: no cuenta como fallo
       if (err instanceof UpstreamError) return upstreamDown(c, err);
       throw err;
     }
@@ -180,7 +206,7 @@ export function authRoutes(deps: AuthRoutesDeps): Hono {
     try {
       const out = await grant("refresh_token", { refresh_token: body.refresh_token as string });
       if (out.kind === "ok") return c.json(out.grant, 200);
-      if (out.kind === "no_role") await revoke(out.accessToken); // el rol se quitó después del login
+      if (out.kind === "no_role") revokeInBackground(out.accessToken); // el rol se quitó después del login
       return c.json({ error: "unauthorized" }, 401);
     } catch (err) {
       if (err instanceof UpstreamError) return upstreamDown(c, err);
