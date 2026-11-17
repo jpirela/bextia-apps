@@ -5,6 +5,7 @@ import type { ChannelAdapter, InboundMessage, OutboundMessage } from "../channel
 import type { InboundOutcome } from "../server/pipeline.ts";
 import type { Embedder } from "../rag/embedder.ts";
 import { simRoutes } from "./sim.ts";
+import { configRoutes } from "./config.ts";
 
 export interface ApiDeps {
   db: Db;
@@ -19,5 +20,6 @@ export function createApiRoutes(deps: ApiDeps): Hono<AuthEnv> {
   const api = new Hono<AuthEnv>();
   api.get("/me", (c) => c.json(c.get("user")));
   api.route("/sim", simRoutes(deps));
+  api.route("/config", configRoutes(deps));
   return api;
 }
