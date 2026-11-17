@@ -1,5 +1,5 @@
 # Mantenido a mano: jor-cli deploy asume rootDir api, pero el correcto es bextia-agentes
-# (los workspaces de yarn y yarn.lock viven ahí; ver K2 en docs/deuda-tecnica.md).
+# (los workspaces de yarn y yarn.lock viven ahí; ver K2 en ../docs/deuda-tecnica.md).
 # El static site del backoffice solo se declara aquí: se crea en Render con aprobación.
 services:
   - type: web
@@ -39,6 +39,7 @@ services:
         sync: false
       - key: DEFAULT_MARKET
         value: ES
+      # Debe incluir la URL del static site bextia-backoffice (se completa a mano al crearlo).
       - key: CORS_ORIGINS
         sync: false
       - key: SIMULATOR_ENABLED
@@ -90,5 +91,6 @@ services:
         name: X-Frame-Options
         value: DENY
     envVars:
+      # Debe ser idéntica a la URL de la API en el connect-src del CSP de arriba; si no, el login queda bloqueado.
       - key: VITE_API_URL
         sync: false
