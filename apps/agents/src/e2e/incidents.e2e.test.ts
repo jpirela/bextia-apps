@@ -10,6 +10,7 @@ import { createStaticKb } from "../rag/kb.ts";
 import { createRateLimiter } from "../server/rate-limit.ts";
 import { createPipeline } from "../server/pipeline.ts";
 import { createApp } from "../server/app.ts";
+import { createTestAuth } from "../auth/test-keys.ts";
 import { seedProtocol } from "../protocols/seed.ts";
 import { createIncidentsAgent } from "../incidents/agent.ts";
 import { runDueTimers } from "../incidents/sla.ts";
@@ -50,19 +51,22 @@ async function setup(script: Parameters<typeof createScriptedLlm>[0]) {
     kb: createStaticKb([{ id: "k1", titulo: "Wifi del hotel", contenido: "La clave está en recepción.", similarity: 0.9 }]),
   });
   const otps: string[] = [];
+  const t = await createTestAuth();
+  const admin = await t.tokenFor("admin");
+  const pipeline = createPipeline({ db, defaultMarket: "ES", contactLimiter: createRateLimiter({ limit: 50, windowMs: 60_000 }), dispatch: agent });
   const app = createApp({
-    apiToken: "tok", corsOrigins: [], routes: {}, channels,
-    pipeline: createPipeline({ db, defaultMarket: "ES", contactLimiter: createRateLimiter({ limit: 50, windowMs: 60_000 }), dispatch: agent }),
-    ipLimiter: createRateLimiter({ limit: 200, windowMs: 60_000 }), simulator: { outbox: sim.outbox },
+    auth: t.config, corsOrigins: [], channels, pipeline,
+    ipLimiter: createRateLimiter({ limit: 200, windowMs: 60_000 }),
+    api: { db, pipeline, simulator: sim },
     widget: { db, tokenSecret: SECRET, deliverOtp: async (_d, codigo) => { otps.push(codigo); } },
   });
   let n = 0;
-  const post = (email: string, text: string) => app.request("/webhooks/sim", {
-    method: "POST", headers: { "content-type": "application/json" },
+  const post = (email: string, text: string) => app.request("/api/sim/send", {
+    method: "POST", headers: { "content-type": "application/json", authorization: `Bearer ${admin}` },
     body: JSON.stringify({ messageId: `e2e-${++n}`, email, name: "x", text }),
   });
   const outboxTo = async (email: string) =>
-    ((await (await app.request("/sim/outbox")).json()) as Array<{ text: string; to: { email?: string } }>)
+    ((await (await app.request("/api/sim/outbox", { headers: { authorization: `Bearer ${admin}` } })).json()) as Array<{ text: string; to: { email?: string } }>)
       .filter((m) => m.to.email === email).map((m) => m.text);
   const runner = { db, send, now: () => now, mailer, providerChannels };
   return { app, post, outboxTo, runner, mails, otps };
