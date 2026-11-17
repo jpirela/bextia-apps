@@ -2,7 +2,8 @@ import { Hono, type Context, type Next } from "hono";
 import { cors } from "hono/cors";
 import { HTTPException } from "hono/http-exception";
 import type { Channel, ChannelAdapter, InboundMessage } from "../channels/types.ts";
-import { InvalidPayloadError, SignatureError } from "../channels/errors.ts";
+import { InvalidPayloadError, safeEqual, SignatureError } from "../channels/errors.ts";
+import { handleImport, MAX_BYTES, rowsFromCsv, rowsFromRequest } from "../api/import.ts";
 import { verifyWhatsAppSubscription } from "../channels/whatsapp.ts";
 import type { InboundOutcome } from "./pipeline.ts";
 import type { RateLimiter } from "./rate-limit.ts";
@@ -21,6 +22,8 @@ export interface AppDeps {
   whatsappVerifyToken?: string;
   api: ApiDeps;
   widget?: WidgetDeps; // widget web (P15): OTP + token (sp3, se conserva)
+  importToken?: string | null; // POST /import/bookings (sistemas del cliente); sin valor → 404
+  importEmailSecret?: string | null; // POST /import/email (reenvío de correo); sin valor → 404
 }
 
 export async function processInbound(
@@ -73,6 +76,37 @@ export function createApp(deps: AppDeps): Hono {
   api.use("*", verifyJwt(deps.auth), attachUser());
   api.route("/", createApiRoutes(deps.api));
   app.route("/api", api);
+
+  // --- Importación externa (fuera de /api: token o secreto propio, no JWT) -------------------
+  app.use("/import/*", async (c, next) => {
+    const hops = (c.req.header("x-forwarded-for") ?? "").split(",").map((s) => s.trim()).filter(Boolean);
+    if (!deps.ipLimiter.hit(`import:${hops.at(-1) ?? "unknown"}`)) return c.json({ error: "rate_limited" }, 429);
+    await next();
+  });
+
+  app.post("/import/bookings", async (c) => {
+    if (!deps.importToken) return c.json({ error: "not_found" }, 404);
+    const auth = c.req.header("authorization") ?? "";
+    if (!auth.startsWith("Bearer ") || !safeEqual(auth.slice(7), deps.importToken)) return c.json({ error: "unauthorized" }, 401);
+    return handleImport(c, deps.api.db, () => rowsFromRequest(c));
+  });
+
+  // Reenvío de correo (p. ej. un webhook de entrada de email): solo adjuntos .csv.
+  app.post("/import/email", async (c) => {
+    if (!deps.importEmailSecret) return c.json({ error: "not_found" }, 404);
+    if (!safeEqual(c.req.header("x-import-secret") ?? "", deps.importEmailSecret)) return c.json({ error: "unauthorized" }, 401);
+    const body = await c.req.json().catch(() => null) as { attachments?: Array<{ filename?: string; contentType?: string; contentBase64?: string }> } | null;
+    const csvs = (body?.attachments ?? []).filter((a) => /\.csv$/i.test(a.filename ?? "") || a.contentType === "text/csv");
+    return handleImport(c, deps.api.db, async () => {
+      const rows: Record<string, string>[] = [];
+      for (const a of csvs) {
+        const buf = Buffer.from(a.contentBase64 ?? "", "base64");
+        if (buf.byteLength > MAX_BYTES) continue;
+        rows.push(...rowsFromCsv(buf.toString("utf8")));
+      }
+      return rows;
+    });
+  });
 
   const ipGuard = async (c: Context, next: Next) => {
     // Render agrega la IP real del cliente al final de x-forwarded-for; los saltos anteriores los controla el cliente.
