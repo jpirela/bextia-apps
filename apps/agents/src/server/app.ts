@@ -1,9 +1,10 @@
 import { Hono, type Context, type Next } from "hono";
 import { cors } from "hono/cors";
+import { bodyLimit } from "hono/body-limit";
 import { HTTPException } from "hono/http-exception";
 import type { Channel, ChannelAdapter, InboundMessage } from "../channels/types.ts";
 import { InvalidPayloadError, safeEqual, SignatureError } from "../channels/errors.ts";
-import { handleImport, MAX_BYTES, rowsFromCsv, rowsFromRequest } from "../api/import.ts";
+import { bodyTooLarge, handleImport, MAX_BYTES, rowsFromAttachments, rowsFromRequest } from "../api/import.ts";
 import { verifyWhatsAppSubscription } from "../channels/whatsapp.ts";
 import type { InboundOutcome } from "./pipeline.ts";
 import type { RateLimiter } from "./rate-limit.ts";
@@ -80,11 +81,12 @@ export function createApp(deps: AppDeps): Hono {
   // --- Importación externa (fuera de /api: token o secreto propio, no JWT) -------------------
   app.use("/import/*", async (c, next) => {
     const hops = (c.req.header("x-forwarded-for") ?? "").split(",").map((s) => s.trim()).filter(Boolean);
-    if (!deps.ipLimiter.hit(`import:${hops.at(-1) ?? "unknown"}`)) return c.json({ error: "rate_limited" }, 429);
+    const conn = (c.env as { incoming?: { socket?: { remoteAddress?: string } } } | undefined)?.incoming?.socket?.remoteAddress;
+    if (!deps.ipLimiter.hit(`import:${hops.at(-1) ?? conn ?? "unknown"}`)) return c.json({ error: "rate_limited" }, 429);
     await next();
   });
 
-  app.post("/import/bookings", async (c) => {
+  app.post("/import/bookings", bodyLimit({ maxSize: MAX_BYTES, onError: bodyTooLarge }), async (c) => {
     if (!deps.importToken) return c.json({ error: "not_found" }, 404);
     const auth = c.req.header("authorization") ?? "";
     if (!auth.startsWith("Bearer ") || !safeEqual(auth.slice(7), deps.importToken)) return c.json({ error: "unauthorized" }, 401);
@@ -92,20 +94,12 @@ export function createApp(deps: AppDeps): Hono {
   });
 
   // Reenvío de correo (p. ej. un webhook de entrada de email): solo adjuntos .csv.
-  app.post("/import/email", async (c) => {
+  // Tope del body: 2 MB de CSV + ~33 % del base64 + margen del JSON.
+  const EMAIL_BODY_LIMIT = Math.ceil(MAX_BYTES * 4 / 3) + 64 * 1024;
+  app.post("/import/email", bodyLimit({ maxSize: EMAIL_BODY_LIMIT, onError: bodyTooLarge }), async (c) => {
     if (!deps.importEmailSecret) return c.json({ error: "not_found" }, 404);
     if (!safeEqual(c.req.header("x-import-secret") ?? "", deps.importEmailSecret)) return c.json({ error: "unauthorized" }, 401);
-    const body = await c.req.json().catch(() => null) as { attachments?: Array<{ filename?: string; contentType?: string; contentBase64?: string }> } | null;
-    const csvs = (body?.attachments ?? []).filter((a) => /\.csv$/i.test(a.filename ?? "") || a.contentType === "text/csv");
-    return handleImport(c, deps.api.db, async () => {
-      const rows: Record<string, string>[] = [];
-      for (const a of csvs) {
-        const buf = Buffer.from(a.contentBase64 ?? "", "base64");
-        if (buf.byteLength > MAX_BYTES) continue;
-        rows.push(...rowsFromCsv(buf.toString("utf8")));
-      }
-      return rows;
-    });
+    return handleImport(c, deps.api.db, async () => rowsFromAttachments(await c.req.json().catch(() => null)));
   });
 
   const ipGuard = async (c: Context, next: Next) => {

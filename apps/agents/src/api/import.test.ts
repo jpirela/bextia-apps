@@ -55,6 +55,34 @@ describe("importación de reservas", () => {
     expect((await send(`${HEADER}\n"abierta`)).status).toBe(400);
   });
 
+  it("fecha imposible: error de fila sin cortar el lote ni dar 500", async () => {
+    const { app } = await setup();
+    const base = Object.fromEntries(HEADER.split(",").map((k, i) => [k, ROW_OK.split(",")[i]]));
+    const rows = [
+      { ...base, codigo: "F-1", inicio: "2026-02-30T08:00:00Z" },
+      { ...base, codigo: "F-2", inicio: "2026-13-01T08:00:00Z" },
+      { ...base, codigo: "F-3", traslado_inicio: "2026-11-08T25:00:00Z" },
+      { ...base, codigo: "F-4", viajero_telefono: "+34600000004", viajero_email: "" },
+    ];
+    const res = await app.request("/import/bookings", { method: "POST", body: JSON.stringify({ rows }), headers: { authorization: "Bearer imp-tok", "content-type": "application/json" } });
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.creadas).toBe(1);
+    // JSON: la primera fila de datos es la 1.
+    expect(body.errores.map((e: { fila: number; field: string }) => [e.fila, e.field])).toEqual([[1, "inicio"], [2, "inicio"], [3, "traslado_inicio"]]);
+  });
+
+  it("tope de filas por importación y JSON inválido → 400", async () => {
+    const { app } = await setup();
+    const hdr = { authorization: "Bearer imp-tok", "content-type": "application/json" };
+    const many = Array.from({ length: 5001 }, () => ({}));
+    expect((await app.request("/import/bookings", { method: "POST", body: JSON.stringify({ rows: many }), headers: hdr })).status).toBe(400);
+    expect((await app.request("/import/bookings", { method: "POST", body: "{no json", headers: hdr })).status).toBe(400);
+    const mail = (body: string) => app.request("/import/email", { method: "POST", body, headers: { "x-import-secret": "mail-sec", "content-type": "application/json" } });
+    expect((await mail("{no json")).status).toBe(400);
+    expect((await mail(JSON.stringify({ attachments: { a: 1 } }))).status).toBe(400);
+  });
+
   it("API externa con IMPORT_TOKEN (JSON) y email con secreto", async () => {
     const { app } = await setup();
     const row = Object.fromEntries(HEADER.split(",").map((k, i) => [k, ROW_OK.split(",")[i]]));

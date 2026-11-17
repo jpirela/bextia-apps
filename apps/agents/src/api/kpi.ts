@@ -7,6 +7,14 @@ import type { ApiDeps } from "./index.ts";
 
 const DAY = 86_400_000;
 
+// Forma JSON de la respuesta (fechas serializadas como ISO 8601); la consume el frontend (Task 13).
+export type KpiPayload = {
+  rango: { desde: string; hasta: string };
+  eventos: { tipo: string; agente: string | null; canal: string | null; valor: number | null; created_at: string }[];
+  leads: { estado: string; score: number | null; mercado: string | null; created_at: string; entregado_at: string | null }[];
+  incidencias: { tipologia: string; urgencia: string; estado: string; requiere_humano: boolean; created_at: string; cerrado_at: string | null }[];
+};
+
 export function parseRange(c: Context, now: Date, defaultDays = 30, maxDays = 366): { desde: Date; hasta: Date } | Response {
   const q = c.req.query();
   const hasta = q.hasta ? dateParam(q.hasta) : now;
