@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Badge, Button, Dropdown, Field, Input, MessageBar, Option, Switch, Text, Textarea } from "@fluentui/react-components";
 import { Inbox } from "krypton-ecosystem/lara/fluent";
 import { api } from "../lib/client";
@@ -10,7 +10,7 @@ type Incident = {
   sla_vence: string | null; created_at: string; reserva: { codigo: string; destino: string | null; viajero_nombre: string | null };
 };
 type IncidentDetail = Incident & {
-  acciones: { tipo: string; monto: string | null; created_at: string }[];
+  acciones: { tipo: string; monto: string | null; detalle: { reembolso?: boolean } | null; created_at: string }[];
   conversacion: { direccion: string; contenido: string; created_at: string }[];
 };
 type Notice = { intent: "error" | "info"; text: string };
@@ -29,7 +29,7 @@ export function Incidents() {
   const [now, setNow] = useState(() => new Date());
 
   const load = useCallback(() => api.get<{ data: Incident[] }>("/api/incidents", { requiere_humano: humano ? "true" : undefined, tipologia })
-    .then((r) => { setItems(r?.data ?? []); setNow(new Date()); })
+    .then((r) => { setItems(r?.data ?? []); setNow(new Date()); setNotice((n) => (n?.intent === "error" ? null : n)); })
     .catch((e) => setNotice({ intent: "error", text: e instanceof ApiError ? `Error ${e.status}` : "Error de red" })), [humano, tipologia]);
   useEffect(() => {
     void load();
@@ -37,9 +37,16 @@ export function Incidents() {
     return () => clearInterval(h);
   }, [load]);
 
-  const open = (id: string) => api.get<IncidentDetail>(`/api/incidents/${id}`).then(setSel).catch(() => setNotice({ intent: "error", text: "No se pudo abrir la incidencia" }));
-  const maxAut = sel ? Math.max(0, ...sel.acciones.filter((a) => a.tipo === "autorizacion").map((a) => Number(a.monto ?? 0))) : 0;
-  const puedeReembolso = !!sel && sel.acciones.some((a) => a.tipo === "autorizacion");
+  const wanted = useRef<string | null>(null);
+  // Conserva el orden del servidor (requiere_humano, sla_vence asc): useMail reordena por dateOf descendente.
+  const rank = useMemo(() => new Map(items.map((x, k) => [x.id, k])), [items]);
+  const open = (id: string) => { wanted.current = id; return api.get<IncidentDetail>(`/api/incidents/${id}`).then((d) => { if (wanted.current === id) setSel(d); }).catch(() => setNotice({ intent: "error", text: "No se pudo abrir la incidencia" })); };
+  // Igual que la API: última autorización menos lo ya reembolsado.
+  const auts = sel?.acciones.filter((a) => a.tipo === "autorizacion") ?? [];
+  const lastAut = auts.length ? auts[auts.length - 1] : undefined;
+  const reembolsado = (sel?.acciones ?? []).filter((a) => a.tipo === "resultado" && a.detalle?.reembolso === true).reduce((t, a) => t + Math.round(Number(a.monto ?? 0) * 100), 0);
+  const maxAut = lastAut ? Math.max(0, Math.round(Number(lastAut.monto ?? 0) * 100) - reembolsado) / 100 : 0;
+  const puedeReembolso = !!lastAut;
 
   const act = async (accion: "tomar" | "cerrar" | "reembolso", extra: { monto?: number } = {}) => {
     if (!sel) return;
@@ -51,7 +58,7 @@ export function Incidents() {
         setNotice({ intent: "info", text: "La incidencia ya estaba cerrada" });
       } else {
         setNotice({ intent: "error", text: e instanceof ApiError && e.status === 409 ? "La acción no es posible en el estado actual"
-          : e instanceof ApiError && e.status === 400 ? "Monto fuera de lo autorizado" : "Error" });
+          : e instanceof ApiError && e.status === 400 ? ((e.body as { issues?: { message: string }[] } | null)?.issues?.[0]?.message ?? "Monto fuera de lo autorizado") : "Error" });
       }
     }
     await open(sel.id); void load();
@@ -72,7 +79,7 @@ export function Incidents() {
         mails={items}
         idOf={(i) => i.id}
         folderOf={folderOf}
-        dateOf={(i) => i.created_at}
+        dateOf={(i) => new Date(items.length - (rank.get(i.id) ?? 0))}
         textOf={(i) => `${i.reserva.codigo} ${i.reserva.viajero_nombre ?? ""} ${i.resumen_ia ?? ""}`}
         isUnread={(i) => i.requiere_humano && i.estado !== "cerrado"}
         searchPlaceholder="Buscar incidencia…"
@@ -115,3 +122,5 @@ export function Incidents() {
     </>
   );
 }
+
+

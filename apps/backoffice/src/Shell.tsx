@@ -1,6 +1,6 @@
 import { useState, type ReactNode } from "react";
 import { Shell as LaraShell, type NavSection } from "krypton-ecosystem/lara/fluent";
-import { HiOutlineArrowUpTray, HiOutlineChartBar, HiOutlineChatBubbleLeftRight, HiOutlineCog6Tooth, HiOutlineExclamationTriangle, HiOutlineUsers } from "react-icons/hi2";
+import { HiOutlineArrowUpTray, HiOutlineChartBar, HiOutlineChatBubbleLeftRight, HiOutlineCog6Tooth, HiOutlineExclamationTriangle, HiOutlineSquares2X2, HiOutlineUsers } from "react-icons/hi2";
 import { navFor, type Role } from "./lib/roles";
 import { session } from "./lib/client";
 
@@ -14,7 +14,7 @@ export function Shell({ role, email, pages }: { role: Role; email: string; pages
   const nav = navFor(role);
   const [current, setCurrent] = useState(nav[0]?.key ?? "");
   const sections: NavSection[] = [{
-    id: "backoffice", label: "Backoffice", icon: <HiOutlineUsers />,
+    id: "backoffice", label: "Backoffice", icon: <HiOutlineSquares2X2 />,
     items: nav.map((n) => ({ id: n.key, label: n.label, icon: ICONS[n.key] ?? null })),
   }];
   return (
@@ -30,3 +30,5 @@ export function Shell({ role, email, pages }: { role: Role; email: string; pages
     </LaraShell>
   );
 }
+
+

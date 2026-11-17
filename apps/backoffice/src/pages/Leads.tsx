@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Badge, MessageBar, Text, Textarea } from "@fluentui/react-components";
 import { Inbox } from "krypton-ecosystem/lara/fluent";
 import { api } from "../lib/client";
@@ -19,7 +19,8 @@ export function Leads() {
     .then((r) => { setItems(r?.data ?? []); setError(null); })
     .catch((e) => setError(e instanceof ApiError ? `Error ${e.status}` : "Error de red")), []);
   useEffect(() => { void load(); }, [load]);
-  const open = (l: Lead) => api.get<LeadDetail>(`/api/leads/${l.id}`).then(setSel).catch(() => setError("No se pudo abrir el lead"));
+  const wanted = useRef<string | null>(null);
+  const open = (l: Lead) => { wanted.current = l.id; return api.get<LeadDetail>(`/api/leads/${l.id}`).then((d) => { if (wanted.current === l.id) setSel(d); }).catch(() => setError("No se pudo abrir el lead")); };
   return (
     <>
       {error && <MessageBar intent="error">{error}</MessageBar>}
@@ -49,3 +50,5 @@ export function Leads() {
     </>
   );
 }
+
+
