@@ -1,0 +1,27 @@
+{
+  "name": "@bextia/backoffice",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "devDependencies": {
+    "@types/react": "19.3.0",
+    "@types/react-dom": "19.3.0",
+    "@vitejs/plugin-react": "6.2.1",
+    "typescript": "7.0.2",
+    "vite": "8.3.6",
+    "vitest": "5.1.0"
+  },
+  "dependencies": {
+    "@fluentui/react-components": "9.75.1",
+    "krypton-ecosystem": "0.4.12",
+    "react": "19.3.1",
+    "react-dom": "19.3.1",
+    "react-icons": "5.7.0"
+  }
+}
