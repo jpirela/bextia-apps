@@ -6,10 +6,7 @@ import { invalid } from "./http.ts";
 import { toCsv } from "./csv.ts";
 import { parseRange } from "./kpi.ts";
 import type { ApiDeps } from "./index.ts";
-
-// Copia local: `LEAD_STATES` vive en ./leads.ts (Task 4, rama paralela). El coordinador puede
-// sustituirla por `import { LEAD_STATES } from "./leads.ts"` al hacer el merge.
-const LEAD_STATES: LeadState[] = ["nuevo", "respondido", "cualificando", "cualificado", "asignado", "entregado"];
+import { LEAD_STATES } from "./leads.ts";
 
 export function exportRoutes(deps: ApiDeps): Hono<AuthEnv> {
   const r = new Hono<AuthEnv>();
