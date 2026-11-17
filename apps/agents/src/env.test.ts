@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { readEnv } from "./env.ts";
 
-const base = { DATABASE_URL: "postgres://x", API_TOKEN: "t" };
+const base = { DATABASE_URL: "postgres://x", SUPABASE_URL: "https://x.supabase.co", SUPABASE_ANON_KEY: "anon-test" };
 
 describe("readEnv", () => {
   it("en producción exige CORS_ORIGINS", () => {
@@ -9,9 +9,22 @@ describe("readEnv", () => {
     expect(readEnv({ ...base, NODE_ENV: "production", CORS_ORIGINS: "https://a.com", ANTHROPIC_API_KEY: "k", WIDGET_TOKEN_SECRET: "x".repeat(32) }).corsOrigins).toEqual(["https://a.com"]);
   });
 
-  it("exige DATABASE_URL y API_TOKEN", () => {
+  it("exige DATABASE_URL; API_TOKEN ya no existe", () => {
     expect(() => readEnv({})).toThrow("DATABASE_URL");
-    expect(() => readEnv({ DATABASE_URL: "postgres://x" })).toThrow("API_TOKEN");
+    expect(readEnv(base)).not.toHaveProperty("apiToken");
+  });
+
+  it("SUPABASE_URL es obligatoria y https (JWKS del JWT y login)", () => {
+    expect(() => readEnv({ ...base, SUPABASE_URL: undefined })).toThrow(/SUPABASE_URL/);
+    expect(() => readEnv({ ...base, SUPABASE_URL: "http://x.supabase.co" })).toThrow(/SUPABASE_URL/);
+    expect(() => readEnv({ ...base, SUPABASE_URL: "no es url" })).toThrow(/SUPABASE_URL/);
+    expect(readEnv({ ...base, SUPABASE_URL: "https://x.supabase.co/" }).supabaseUrl).toBe("https://x.supabase.co");
+  });
+
+  it("SUPABASE_ANON_KEY es obligatoria (login del backoffice vía la API)", () => {
+    expect(() => readEnv({ ...base, SUPABASE_ANON_KEY: undefined })).toThrow(/SUPABASE_ANON_KEY/);
+    expect(() => readEnv({ ...base, SUPABASE_ANON_KEY: "  " })).toThrow(/SUPABASE_ANON_KEY/);
+    expect(readEnv(base).supabaseAnonKey).toBe("anon-test");
   });
 
   it("aplica valores por defecto y deja canales opcionales apagados", () => {

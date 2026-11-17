@@ -13,6 +13,8 @@ import type { AuthConfig } from "../auth/jwt.ts";
 import { verifyJwt } from "../auth/jwt.ts";
 import { attachUser, type AuthEnv } from "../auth/roles.ts";
 import { createApiRoutes, type ApiDeps } from "../api/index.ts";
+import { clientIp } from "../api/http.ts";
+import { authRoutes, type AuthRoutesDeps } from "../api/auth.ts";
 
 export interface AppDeps {
   auth: AuthConfig;
@@ -25,6 +27,7 @@ export interface AppDeps {
   widget?: WidgetDeps; // widget web (P15): OTP + token (sp3, se conserva)
   importToken?: string | null; // POST /import/bookings (sistemas del cliente); sin valor → 404
   importEmailSecret?: string | null; // POST /import/email (reenvío de correo); sin valor → 404
+  authApi?: AuthRoutesDeps; // login del backoffice; sin ella /api/auth/* cae en el JWT (401)
 }
 
 export async function processInbound(
@@ -66,11 +69,21 @@ export function createApp(deps: AppDeps): Hono {
   });
   app.use("*", cors({ origin: deps.corsOrigins, allowHeaders: ["authorization", "content-type"], allowMethods: ["GET", "POST", "PATCH", "DELETE", "OPTIONS"] }));
 
+  const ipGuard = async (c: Context, next: Next) => {
+    if (!deps.ipLimiter.hit(clientIp(c))) return c.json({ error: "rate_limited" }, 429);
+    await next();
+  };
+
   // --- /api público (sin JWT) ---------------------------------------------------------------
   // Las sub-apps públicas de /api se montan AQUÍ, antes de `app.route("/api", api)`: Hono ejecuta
   // los handlers en orden de registro, así que una ruta pública ya respondió cuando llegaría el
   // middleware JWT. La Task 10a agrega `/api/auth/*` en este punto (p. ej. `app.route("/api/auth", …)`).
   app.get("/api/health", (c) => c.json({ ok: true }));
+  // Pública (sin JWT): se registra antes que la sub-app /api para que su middleware no la alcance.
+  if (deps.authApi) {
+    app.use("/api/auth/*", ipGuard);
+    app.route("/api/auth", authRoutes(deps.authApi));
+  }
 
   // --- /api autenticado (JWT de Supabase + rol en app_metadata) ------------------------------
   const api = new Hono<AuthEnv>();
@@ -80,9 +93,7 @@ export function createApp(deps: AppDeps): Hono {
 
   // --- Importación externa (fuera de /api: token o secreto propio, no JWT) -------------------
   app.use("/import/*", async (c, next) => {
-    const hops = (c.req.header("x-forwarded-for") ?? "").split(",").map((s) => s.trim()).filter(Boolean);
-    const conn = (c.env as { incoming?: { socket?: { remoteAddress?: string } } } | undefined)?.incoming?.socket?.remoteAddress;
-    if (!deps.ipLimiter.hit(`import:${hops.at(-1) ?? conn ?? "unknown"}`)) return c.json({ error: "rate_limited" }, 429);
+    if (!deps.ipLimiter.hit(`import:${clientIp(c)}`)) return c.json({ error: "rate_limited" }, 429);
     await next();
   });
 
@@ -102,14 +113,6 @@ export function createApp(deps: AppDeps): Hono {
     return handleImport(c, deps.api.db, async () => rowsFromAttachments(await c.req.json().catch(() => null)));
   });
 
-  const ipGuard = async (c: Context, next: Next) => {
-    // Render agrega la IP real del cliente al final de x-forwarded-for; los saltos anteriores los controla el cliente.
-    const hops = (c.req.header("x-forwarded-for") ?? "").split(",").map((s) => s.trim()).filter(Boolean);
-    const conn = (c.env as { incoming?: { socket?: { remoteAddress?: string } } } | undefined)?.incoming?.socket?.remoteAddress;
-    const ip = hops.at(-1) ?? conn ?? "unknown";
-    if (!deps.ipLimiter.hit(ip)) return c.json({ error: "rate_limited" }, 429);
-    await next();
-  };
   app.use("/webhooks/*", ipGuard);
   app.use("/widget/*", ipGuard);
   if (deps.widget) registerWidgetRoutes(app, deps.widget);
