@@ -10,6 +10,7 @@ import { kpiRoutes } from "./kpi.ts";
 import { exportRoutes } from "./export.ts";
 import { leadsRoutes } from "./leads.ts";
 import { incidentsRoutes } from "./incidents.ts";
+import { configRoutes } from "./config.ts";
 
 export interface ApiDeps {
   db: Db;
@@ -29,5 +30,6 @@ export function createApiRoutes(deps: ApiDeps): Hono<AuthEnv> {
   api.route("/import", importRoutes(deps));
   api.route("/kpi", kpiRoutes(deps));
   api.route("/export", exportRoutes(deps));
+  api.route("/config", configRoutes(deps));
   return api;
 }

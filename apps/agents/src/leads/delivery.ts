@@ -6,6 +6,8 @@ import { plainSummary, type QualFacts } from "./qualify.ts";
 import { hmacSha256Hex } from "../channels/errors.ts";
 import type { Mailer } from "../notify/mailer.ts";
 import type { LeadRow } from "./store.ts";
+import { isWithinBusinessHours, ruleFromRow } from "../orchestrator/business-hours.ts";
+import type { WeeklyHours } from "../db/schema.ts";
 
 export interface DeliveryDeps {
   db: Db;
@@ -28,6 +30,18 @@ export function workdayStarted(timeZone: string | null, now: Date, startHour = 8
   const weekday = parts.find((p) => p.type === "weekday")?.value ?? "";
   const hour = Number(parts.find((p) => p.type === "hour")?.value ?? "0");
   return WORKDAYS.has(weekday) && hour >= startHour && hour < endHour;
+}
+
+// P19: con horario propio manda ese horario; sin él, la jornada por omisión (workdayStarted resuelve null a DEFAULT_TZ).
+export function agentAvailable(
+  agent: { zona_horaria: string | null; horario: WeeklyHours | null; festivos: string[] },
+  now: Date,
+  hours: { startHour?: number; endHour?: number } = {},
+): boolean {
+  if (agent.horario && agent.zona_horaria) {
+    return isWithinBusinessHours(ruleFromRow({ zona_horaria: agent.zona_horaria, horario: agent.horario, festivos: agent.festivos }), now);
+  }
+  return workdayStarted(agent.zona_horaria, now, hours.startHour, hours.endHour);
 }
 
 type Row = { lead: LeadRow; agent: typeof sales_agent.$inferSelect; contact: typeof contact.$inferSelect };
@@ -151,7 +165,13 @@ export async function deliverDue(deps: DeliveryDeps): Promise<{ delivered: numbe
   await promoteStale(deps, now);
   const byAgent = new Map<string, Row[]>();
   for (const r of await loadAssigned(deps.db)) {
-    if (!workdayStarted(r.agent.zona_horaria, now, deps.startHour, deps.endHour)) continue;
+    let available: boolean;
+    try { available = agentAvailable(r.agent, now, { startHour: deps.startHour, endHour: deps.endHour }); } catch (e) {
+      // Horario/zona guardados inválidos: se salta a ese comercial, el resto sigue. Sin PII: solo el id.
+      console.error("delivery: horario inválido del comercial", r.agent.id, (e as Error).name);
+      continue;
+    }
+    if (!available) continue;
     byAgent.set(r.agent.id, [...(byAgent.get(r.agent.id) ?? []), r]);
   }
   let delivered = 0;

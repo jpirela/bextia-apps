@@ -5,7 +5,7 @@ import type { Db } from "../db/index.ts";
 import { contact, conversation, kpi_event, lead, message, sales_agent } from "../db/schema.ts";
 import type { Mail, Mailer } from "../notify/mailer.ts";
 import { hmacSha256Hex } from "../channels/errors.ts";
-import { deliverDue, deliverLead, workdayStarted } from "./delivery.ts";
+import { agentAvailable, deliverDue, deliverLead, workdayStarted } from "./delivery.ts";
 
 let db: Db;
 let close: () => Promise<void>;
@@ -133,5 +133,35 @@ describe("deliverLead + webhook", () => {
     const ok = await deliverLead({ db, mailer: mailer(), webhook: { url: "https://hook.test", secret: "s", fetch: (async () => { throw new Error("down"); }) as unknown as typeof fetch } }, ids[0]);
     expect(ok).toBe(true);
     expect(await db.select().from(kpi_event).where(eq(kpi_event.tipo, "webhook_fallido"))).toHaveLength(1);
+  });
+});
+
+describe("agentAvailable (P19)", () => {
+  const horario = { mon: [["09:00", "13:00"]], tue: [["09:00", "13:00"]] } as never;
+  it("con horario propio: solo dentro de su franja y fuera de sus festivos", () => {
+    const a = { zona_horaria: "America/Mexico_City", horario, festivos: ["2026-11-10"] };
+    expect(agentAvailable(a, new Date("2026-11-09T16:00:00Z"))).toBe(true);   // lun 10:00 CDMX (mon)
+    expect(agentAvailable(a, new Date("2026-11-09T20:00:00Z"))).toBe(false);  // lun 14:00 CDMX
+    expect(agentAvailable(a, new Date("2026-11-10T16:00:00Z"))).toBe(false);  // mar (tue) festivo
+  });
+  it("sin horario: conserva la jornada por omisión del sp2", () => {
+    const a = { zona_horaria: "Europe/Madrid", horario: null, festivos: [] };
+    expect(agentAvailable(a, new Date("2026-11-09T09:30:00Z"))).toBe(true);   // 10:30 Madrid
+    expect(agentAvailable(a, new Date("2026-11-09T05:00:00Z"))).toBe(false);  // 06:00 Madrid
+  });
+});
+describe("deliverDue: comercial con horario inválido", () => {
+  it("lo salta y entrega a los demás", async () => {
+    const { ids } = await seed(1); // Beto, jornada por omisión
+    const [bad] = await db.insert(sales_agent).values({ nombre: "Malo", email: "malo@bextia.test", zona_horaria: "Marte/Olimpo", horario: { mon: [["09:00", "18:00"]] } }).returning();
+    const [c] = await db.insert(contact).values({ nombre: "Ana", email: "ana@example.com", telefono: "+34600333444" }).returning();
+    await db.insert(lead).values({ contact_id: c.id, estado: "asignado", sales_agent_id: bad.id, destino: "X", score: 50, resumen_ia: "R" });
+    const m = mailer();
+    const err = vi.spyOn(console, "error").mockImplementation(() => {});
+    expect(await deliverDue({ db, mailer: m, now: () => new Date("2026-11-10T07:15:00Z") })).toEqual({ delivered: 1, failed: 0 });
+    expect(m.sent.map((x) => x.to)).toEqual(["beto@bextia.test"]);
+    expect(JSON.stringify(err.mock.calls)).not.toContain("malo@bextia.test");
+    err.mockRestore();
+    expect(ids).toHaveLength(1);
   });
 });
