@@ -15,7 +15,8 @@
     "db:migrate": "drizzle-kit migrate",
     "db:migrate:deploy": "node --import tsx src/db/migrate.ts",
     "protocol:seed": "node --import tsx src/protocols/seed-cli.ts",
-    "kb:index": "node --env-file-if-exists=../../.env --import tsx src/rag/index-kb.ts"
+    "kb:index": "node --env-file-if-exists=../../.env --import tsx src/rag/index-kb.ts",
+    "eval": "node --env-file-if-exists=../../.env --import tsx src/eval/run.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^1.6.0",
