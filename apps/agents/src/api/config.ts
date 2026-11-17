@@ -13,6 +13,10 @@ interface ResourceDef {
   table: PgTable & { id: never; activo?: never };
   fields: FieldDescriptor[];
   softDelete?: boolean;
+  /** Columnas que admiten null; el resto de campos rechaza null (NOT NULL). */
+  nullable?: string[];
+  /** Exige zona_horaria cuando hay horario (se contrasta con la fila guardada en PATCH). */
+  needsZone?: boolean;
   normalize?: (v: Record<string, unknown>) => Record<string, unknown>;
   check?: (v: Record<string, unknown>) => Issue[];
   after?: (deps: ApiDeps) => Promise<void>;
@@ -25,16 +29,31 @@ const tz = (v: Record<string, unknown>): Issue[] => {
 // Validación compartida de horario semanal y festivos (business_hours y sales_agent).
 const hoursIssues = (v: Record<string, unknown>): Issue[] => {
   const issues: Issue[] = [];
-  if (v.horario !== undefined && v.horario !== null) { try { parseWeeklyHours(v.horario); } catch { issues.push({ field: "horario", code: "hours", message: "horario inválido (HH:MM)" }); } }
-  if (Array.isArray(v.festivos) && v.festivos.some((d) => typeof d !== "string" || !DATE.test(d))) issues.push({ field: "festivos", code: "date", message: "fechas YYYY-MM-DD" });
+  if (v.horario !== undefined && v.horario !== null) {
+    try {
+      const w = parseWeeklyHours(v.horario);
+      if (!Object.values(w).some((r) => r && r.length > 0)) issues.push({ field: "horario", code: "hours", message: "al menos un día con tramos" });
+    } catch { issues.push({ field: "horario", code: "hours", message: "horario inválido (HH:MM)" }); }
+  }
+  if (Array.isArray(v.festivos) && v.festivos.some((d) => typeof d !== "string" || !isRealDate(d))) issues.push({ field: "festivos", code: "date", message: "fechas YYYY-MM-DD" });
   return issues;
 };
 const lowerEmail = (v: Record<string, unknown>) => (typeof v.email === "string" ? { ...v, email: v.email.trim().toLowerCase() } : v);
 const DATE = /^\d{4}-\d{2}-\d{2}$/;
+// Fecha real: round-trip por Date (rechaza 2026-13-45 y 2026-02-30).
+const isRealDate = (d: string) => DATE.test(d) && new Date(`${d}T00:00:00Z`).toISOString().slice(0, 10) === d;
+const trimKeys = (keys: string[]) => (v: Record<string, unknown>) => {
+  const o = { ...v };
+  for (const k of keys) if (typeof o[k] === "string") o[k] = (o[k] as string).trim();
+  return o;
+};
+const compose = (...fs: Array<(v: Record<string, unknown>) => Record<string, unknown>>) => (v: Record<string, unknown>) => fs.reduce((a, f) => f(a), v);
+const MAX_NUMERIC = 9999999999.99; // numeric(12,2)
+const uniqueViolation = (e: unknown) => (e as { code?: string })?.code === "23505" || (e as { cause?: { code?: string } })?.cause?.code === "23505";
 
 const RESOURCES: Record<string, ResourceDef> = {
   sales_agent: {
-    table: sales_agent as never, softDelete: true, normalize: lowerEmail, check: (v) => [...tz(v), ...hoursIssues(v)],
+    table: sales_agent as never, softDelete: true, needsZone: true, nullable: ["zona_horaria", "horario"], normalize: compose(lowerEmail, trimKeys(["nombre"])), check: (v) => [...tz(v), ...hoursIssues(v)],
     fields: [
       { name: "nombre", type: "text", required: true, min: 1, max: 120 },
       { name: "email", type: "email", required: true },
@@ -59,7 +78,7 @@ const RESOURCES: Record<string, ResourceDef> = {
     check: (v) => [...tz(v), ...hoursIssues(v)],
   },
   on_call: {
-    table: on_call as never, softDelete: true, normalize: lowerEmail,
+    table: on_call as never, softDelete: true, nullable: ["telefono"], normalize: compose(lowerEmail, trimKeys(["nombre"])),
     fields: [
       { name: "nombre", type: "text", required: true, min: 1 },
       { name: "email", type: "email", required: true },
@@ -70,7 +89,7 @@ const RESOURCES: Record<string, ResourceDef> = {
   },
   kb_article: {
     table: kb_article as never,
-    normalize: (v) => ({ ...v, embedding: null }), // todo cambio invalida el embedding
+    normalize: (v) => ({ ...trimKeys(["titulo"])(v), embedding: null }), // todo cambio invalida el embedding
     fields: [
       { name: "titulo", type: "text", required: true, min: 1, max: 200 },
       { name: "contenido", type: "longtext", required: true, min: 1, max: 20000 },
@@ -81,12 +100,17 @@ const RESOURCES: Record<string, ResourceDef> = {
   },
 };
 
-function check(def: ResourceDef, body: Record<string, unknown>, partial: boolean): Issue[] {
+function check(def: ResourceDef, body: Record<string, unknown>, partial: boolean, stored?: Record<string, unknown>): Issue[] {
+  const nulls = Object.keys(body).filter((k) => body[k] === null && !(def.nullable ?? []).includes(k))
+    .map((k) => ({ field: k, code: "null", message: "no admite null" }));
+  const eff = { ...(stored ?? {}), ...body };
+  const zone: Issue[] = def.needsZone && eff.horario != null && eff.zona_horaria == null
+    ? [{ field: "zona_horaria", code: "required", message: "obligatoria si hay horario" }] : [];
   const allowed = new Set(def.fields.map((f) => f.name));
   const extra = Object.keys(body).filter((k) => !allowed.has(k)).map((k) => ({ field: k, code: "unknown", message: "campo no permitido" }));
   const fields = partial ? def.fields.filter((f) => f.name in body).map((f) => ({ ...f, required: false })) : def.fields;
   const res = validate(fields as FieldDescriptor[], body, { locale: "es" });
-  return [...extra, ...(res.ok ? [] : res.issues), ...(def.check?.(body) ?? [])];
+  return [...nulls, ...extra, ...zone, ...(res.ok ? [] : res.issues), ...(def.check?.(body) ?? [])];
 }
 
 export function configRoutes(deps: ApiDeps): Hono<AuthEnv> {
@@ -100,12 +124,13 @@ export function configRoutes(deps: ApiDeps): Hono<AuthEnv> {
     if (!UUID_RE.test(pid)) return notFound(c);
     const body = await readJson(c);
     if (!body) return invalid(c, [{ field: "", code: "json", message: "cuerpo inválido" }]);
+    if (!Object.keys(body).length) return invalid(c, [{ field: "", code: "empty", message: "nada para actualizar" }]);
     const extra = Object.keys(body).filter((k) => k !== "tope_autorizado" && k !== "activo");
     if (extra.length) return invalid(c, extra.map((k) => ({ field: k, code: "unknown", message: "campo no editable" })));
     const set: Partial<typeof protocol.$inferInsert> = {};
     if ("tope_autorizado" in body) {
       const t = body.tope_autorizado;
-      if (t !== null && (typeof t !== "number" || !Number.isFinite(t) || t < 0)) return invalid(c, [{ field: "tope_autorizado", code: "min", message: "número ≥ 0" }]);
+      if (t !== null && (typeof t !== "number" || !Number.isFinite(t) || t < 0 || t > MAX_NUMERIC)) return invalid(c, [{ field: "tope_autorizado", code: "min", message: "número entre 0 y 9999999999.99" }]);
       set.tope_autorizado = t === null ? null : (t as number).toFixed(2);
     }
     if ("activo" in body) {
@@ -134,7 +159,11 @@ export function configRoutes(deps: ApiDeps): Hono<AuthEnv> {
     const v = def.normalize ? def.normalize(body) : body;
     const issues = check(def, Object.fromEntries(Object.entries(v).filter(([k]) => k !== "embedding")), false);
     if (issues.length) return invalid(c, issues);
-    const [row] = await deps.db.insert(def.table as PgTable).values(v as never).returning() as Record<string, unknown>[];
+    let row: Record<string, unknown>;
+    try { [row] = await deps.db.insert(def.table as PgTable).values(v as never).returning() as Record<string, unknown>[]; } catch (e) {
+      if (uniqueViolation(e)) return c.json({ error: "conflict" }, 409);
+      throw e;
+    }
     // Si falla el embedder la fila ya está guardada: queda pendiente y la reindexa el siguiente guardado.
     try { await def.after?.(deps); } catch (e) { console.error("kb: embedding pendiente", (e as Error).name); }
     const { embedding: _e, ...out } = row;
@@ -148,10 +177,20 @@ export function configRoutes(deps: ApiDeps): Hono<AuthEnv> {
     const body = await readJson(c);
     if (!body || !Object.keys(body).length) return invalid(c, [{ field: "", code: "empty", message: "nada para actualizar" }]);
     const v = def.normalize ? def.normalize(body) : body;
-    const issues = check(def, Object.fromEntries(Object.entries(v).filter(([k]) => k !== "embedding")), true);
-    if (issues.length) return invalid(c, issues);
     const t = def.table as PgTable & { id: never };
-    const [row] = await deps.db.update(t).set(v as never).where(eq((t as never as { id: never }).id, rid as never)).returning() as Record<string, unknown>[];
+    const idCol = (t as never as { id: never }).id;
+    let stored: Record<string, unknown> | undefined;
+    if (def.needsZone && ("horario" in v || "zona_horaria" in v)) {
+      [stored] = await deps.db.select().from(t as PgTable).where(eq(idCol, rid as never)) as Record<string, unknown>[];
+      if (!stored) return notFound(c);
+    }
+    const issues = check(def, Object.fromEntries(Object.entries(v).filter(([k]) => k !== "embedding")), true, stored);
+    if (issues.length) return invalid(c, issues);
+    let row: Record<string, unknown> | undefined;
+    try { [row] = await deps.db.update(t).set(v as never).where(eq(idCol, rid as never)).returning() as Record<string, unknown>[]; } catch (e) {
+      if (uniqueViolation(e)) return c.json({ error: "conflict" }, 409);
+      throw e;
+    }
     if (!row) return notFound(c);
     try { await def.after?.(deps); } catch (e) { console.error("kb: embedding pendiente", (e as Error).name); }
     const { embedding: _e, ...out } = row;

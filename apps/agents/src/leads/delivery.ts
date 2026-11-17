@@ -165,7 +165,13 @@ export async function deliverDue(deps: DeliveryDeps): Promise<{ delivered: numbe
   await promoteStale(deps, now);
   const byAgent = new Map<string, Row[]>();
   for (const r of await loadAssigned(deps.db)) {
-    if (!agentAvailable(r.agent, now, { startHour: deps.startHour, endHour: deps.endHour })) continue;
+    let available: boolean;
+    try { available = agentAvailable(r.agent, now, { startHour: deps.startHour, endHour: deps.endHour }); } catch (e) {
+      // Horario/zona guardados inválidos: se salta a ese comercial, el resto sigue. Sin PII: solo el id.
+      console.error("delivery: horario inválido del comercial", r.agent.id, (e as Error).name);
+      continue;
+    }
+    if (!available) continue;
     byAgent.set(r.agent.id, [...(byAgent.get(r.agent.id) ?? []), r]);
   }
   let delivered = 0;

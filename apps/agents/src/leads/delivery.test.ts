@@ -150,3 +150,18 @@ describe("agentAvailable (P19)", () => {
     expect(agentAvailable(a, new Date("2026-11-09T05:00:00Z"))).toBe(false);  // 06:00 Madrid
   });
 });
+describe("deliverDue: comercial con horario inválido", () => {
+  it("lo salta y entrega a los demás", async () => {
+    const { ids } = await seed(1); // Beto, jornada por omisión
+    const [bad] = await db.insert(sales_agent).values({ nombre: "Malo", email: "malo@bextia.test", zona_horaria: "Marte/Olimpo", horario: { mon: [["09:00", "18:00"]] } }).returning();
+    const [c] = await db.insert(contact).values({ nombre: "Ana", email: "ana@example.com", telefono: "+34600333444" }).returning();
+    await db.insert(lead).values({ contact_id: c.id, estado: "asignado", sales_agent_id: bad.id, destino: "X", score: 50, resumen_ia: "R" });
+    const m = mailer();
+    const err = vi.spyOn(console, "error").mockImplementation(() => {});
+    expect(await deliverDue({ db, mailer: m, now: () => new Date("2026-11-10T07:15:00Z") })).toEqual({ delivered: 1, failed: 0 });
+    expect(m.sent.map((x) => x.to)).toEqual(["beto@bextia.test"]);
+    expect(JSON.stringify(err.mock.calls)).not.toContain("malo@bextia.test");
+    err.mockRestore();
+    expect(ids).toHaveLength(1);
+  });
+});

@@ -77,4 +77,15 @@ describe("config", () => {
     expect((await call("PATCH", `/protocol/${p.id}`, { tope_autorizado: -1 })).status).toBe(400);
     expect((await call("POST", "/protocol", { codigo: "x" })).status).toBe(404);
   });
+  it("null en campos NOT NULL y horario sin zona dan 400", async () => {
+    const { call } = await setup();
+    const ag = await (await call("POST", "/sales_agent", { nombre: "Beto", email: "b@bextia.test" })).json();
+    expect((await call("PATCH", `/sales_agent/${ag.id}`, { nombre: null })).status).toBe(400);
+    expect((await call("POST", "/sales_agent", { nombre: "C", email: "c@bextia.test", destinos: null })).status).toBe(400);
+    const horario = { mon: [["09:00", "13:00"]] };
+    expect((await call("PATCH", `/sales_agent/${ag.id}`, { horario })).status).toBe(400); // sin zona guardada
+    expect((await call("PATCH", `/sales_agent/${ag.id}`, { horario: { mon: [] } , zona_horaria: "Europe/Madrid" })).status).toBe(400); // sin tramos
+    expect((await call("PATCH", `/sales_agent/${ag.id}`, { horario, zona_horaria: "Europe/Madrid" })).status).toBe(200);
+    expect((await call("POST", "/sales_agent", { nombre: "D", email: "b@bextia.test" })).status).toBe(409);
+  });
 });
