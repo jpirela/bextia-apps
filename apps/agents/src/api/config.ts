@@ -41,7 +41,11 @@ const hoursIssues = (v: Record<string, unknown>): Issue[] => {
 const lowerEmail = (v: Record<string, unknown>) => (typeof v.email === "string" ? { ...v, email: v.email.trim().toLowerCase() } : v);
 const DATE = /^\d{4}-\d{2}-\d{2}$/;
 // Fecha real: round-trip por Date (rechaza 2026-13-45 y 2026-02-30).
-const isRealDate = (d: string) => DATE.test(d) && new Date(`${d}T00:00:00Z`).toISOString().slice(0, 10) === d;
+const isRealDate = (d: string) => {
+  if (!DATE.test(d)) return false;
+  const t = new Date(`${d}T00:00:00Z`);
+  return !Number.isNaN(t.getTime()) && t.toISOString().slice(0, 10) === d;
+};
 const trimKeys = (keys: string[]) => (v: Record<string, unknown>) => {
   const o = { ...v };
   for (const k of keys) if (typeof o[k] === "string") o[k] = (o[k] as string).trim();

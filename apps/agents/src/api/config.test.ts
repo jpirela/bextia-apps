@@ -53,6 +53,9 @@ describe("config", () => {
     expect((await call("POST", "/business_hours", ok)).status).toBe(201);
     expect((await call("POST", "/business_hours", { ...ok, mercado: "PT", horario: { mon: [["9", "25:00"]] } })).status).toBe(400);
     expect((await call("POST", "/business_hours", { ...ok, mercado: "MX", festivos: ["25/12"] })).status).toBe(400);
+    for (const d of ["2026-13-45", "2026-00-10", "2026-02-30"]) {
+      expect((await call("POST", "/business_hours", { ...ok, mercado: "MX", festivos: [d] })).status).toBe(400);
+    }
   });
 
   it("KB: al guardar se vacía el embedding y se recalcula si hay embedder", async () => {
