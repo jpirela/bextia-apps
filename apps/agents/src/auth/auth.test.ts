@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { Hono } from "hono";
 import { HTTPException } from "hono/http-exception";
 import { decodeHeader, sign } from "hono/utils/jwt/jwt";
-import { verifyJwt, supabaseAuthConfig, JWKS_TTL_MS, type AuthConfig } from "./jwt.ts";
+import { verifyJwt, supabaseAuthConfig, JWKS_TTL_MS, JWKS_FORCE_REFRESH_MS, type AuthConfig } from "./jwt.ts";
 import { attachUser, requireRole, userFromClaims, type AuthEnv } from "./roles.ts";
 import { createTestAuth, TEST_ISSUER } from "./test-keys.ts";
 
@@ -84,10 +84,11 @@ describe("JWKS remoto con caché", () => {
     let clock = 1_000_000;
     let falla = false;
     let llamadas = 0;
+    let servidas = t.config.keys;
     const fetchStub = (async () => {
       llamadas++;
       if (falla) throw new Error("red caída");
-      return new Response(JSON.stringify({ keys: t.config.keys }), { status: 200 });
+      return new Response(JSON.stringify({ keys: servidas }), { status: 200 });
     }) as unknown as typeof fetch;
     const cfg: AuthConfig = { jwksUri: URI, issuer: TEST_ISSUER, fetch: fetchStub, now: () => clock };
     return {
@@ -95,6 +96,7 @@ describe("JWKS remoto con caché", () => {
       avanzar: (ms: number) => { clock += ms; },
       fallar: () => { falla = true; },
       llamadas: () => llamadas,
+      servir: (keys: AuthConfig["keys"]) => { servidas = keys; },
     };
   }
 
@@ -126,4 +128,27 @@ describe("JWKS remoto con caché", () => {
     expect(res.status).toBe(401);
     expect(await res.json()).toEqual({ error: "unauthorized" });
   });
+
+  it("kid desconocido con caché fresca fuerza un refresco, como máximo uno cada 60 s", async () => {
+    const s = await setup();
+    const nueva = await createTestAuth();
+    const ajena = await createTestAuth();
+    expect((await s.a.request("/me", bearer(await s.t.tokenFor("admin")))).status).toBe(200);
+    expect(s.llamadas()).toBe(1);
+    s.servir([...(s.t.config.keys ?? []), ...(nueva.config.keys ?? [])]); // rotación en Supabase
+    expect((await s.a.request("/me", bearer(await nueva.tokenFor("admin")))).status).toBe(200);
+    expect(s.llamadas()).toBe(2);
+    expect((await s.a.request("/me", bearer(await ajena.tokenFor("admin")))).status).toBe(401);
+    expect(s.llamadas()).toBe(2); // dentro de la ventana: sin fetch
+    s.avanzar(JWKS_FORCE_REFRESH_MS + 1);
+    expect((await s.a.request("/me", bearer(await ajena.tokenFor("admin")))).status).toBe(401);
+    expect(s.llamadas()).toBe(3);
+  });
+});
+
+it("token sin exp: 401", async () => {
+  const t = await createTestAuth();
+  const res = await app(t.config).request("/me", bearer(await t.tokenFor("admin", undefined, { exp: undefined })));
+  expect(res.status).toBe(401);
+  expect(await res.json()).toEqual({ error: "unauthorized" });
 });
