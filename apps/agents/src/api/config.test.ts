@@ -47,6 +47,23 @@ describe("config", () => {
     expect(row.activo).toBe(false);
   });
 
+  it("alta con el email de una fila dada de baja la reactiva; si está activa, 409", async () => {
+    const { call } = await setup();
+    const ag = await (await call("POST", "/sales_agent", { nombre: "Beto", email: "beto@bextia.test", destinos: ["Lisboa"] })).json();
+    expect((await call("POST", "/sales_agent", { nombre: "Otro", email: "BETO@bextia.test" })).status).toBe(409);
+    await call("DELETE", `/sales_agent/${ag.id}`);
+    const res = await call("POST", "/sales_agent", { nombre: "Beto 2", email: "beto@bextia.test", destinos: ["Roma"] });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({ id: ag.id, nombre: "Beto 2", destinos: ["Roma"], activo: true });
+    expect(await db.select().from(sales_agent).where(eq(sales_agent.email, "beto@bextia.test"))).toHaveLength(1);
+    const g = await call("POST", "/on_call", { nombre: "G", email: "g@bextia.test", prioridad: 1 });
+    const { id } = await g.json();
+    await call("DELETE", `/on_call/${id}`);
+    const back = await call("POST", "/on_call", { nombre: "G2", email: "g@bextia.test", prioridad: 2 });
+    expect(back.status).toBe(200);
+    expect(await back.json()).toMatchObject({ id, nombre: "G2", prioridad: 2, activo: true });
+    expect((await call("POST", "/on_call", { nombre: "G3", email: "g@bextia.test" })).status).toBe(409);
+  });
   it("horarios: valida HH:MM y la zona horaria", async () => {
     const { call } = await setup();
     const ok = { mercado: "ES", zona_horaria: "Europe/Madrid", horario: { mon: [["09:00", "18:00"]] }, festivos: ["2026-12-25"] };

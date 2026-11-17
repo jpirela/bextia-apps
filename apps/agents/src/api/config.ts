@@ -1,5 +1,5 @@
 import { Hono } from "hono";
-import { asc, eq } from "drizzle-orm";
+import { and, asc, eq } from "drizzle-orm";
 import { validate, type FieldDescriptor } from "@jorgepirelarivas/clark";
 import type { PgTable } from "drizzle-orm/pg-core";
 import { business_hours, kb_article, on_call, protocol, sales_agent } from "../db/schema.ts";
@@ -164,14 +164,21 @@ export function configRoutes(deps: ApiDeps): Hono<AuthEnv> {
     const issues = check(def, Object.fromEntries(Object.entries(v).filter(([k]) => k !== "embedding")), false);
     if (issues.length) return invalid(c, issues);
     let row: Record<string, unknown>;
+    let status: 201 | 200 = 201;
     try { [row] = await deps.db.insert(def.table as PgTable).values(v as never).returning() as Record<string, unknown>[]; } catch (e) {
-      if (uniqueViolation(e)) return c.json({ error: "conflict" }, 409);
-      throw e;
+      if (!uniqueViolation(e)) throw e;
+      // Baja lógica: un alta con el email de una fila inactiva la reactiva con los datos nuevos; si está activa, 409.
+      const t = def.table as never as PgTable & { email: never; activo: never };
+      const [back] = def.softDelete && typeof v.email === "string"
+        ? await deps.db.update(t).set({ ...v, activo: true } as never).where(and(eq(t.email, v.email as never), eq(t.activo, false as never))).returning() as Record<string, unknown>[]
+        : [];
+      if (!back) return c.json({ error: "conflict" }, 409);
+      row = back; status = 200;
     }
     // Si falla el embedder la fila ya está guardada: queda pendiente y la reindexa el siguiente guardado.
     try { await def.after?.(deps); } catch (e) { console.error("kb: embedding pendiente", (e as Error).name); }
     const { embedding: _e, ...out } = row;
-    return c.json(out, 201);
+    return c.json(out, status);
   });
 
   r.patch("/:recurso/:id", async (c) => {
