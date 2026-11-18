@@ -81,7 +81,9 @@ const JSON_SCHEMA = {
   required: ["tipo", "minutos"],
   properties: {
     tipo: { type: "string", enum: ["eta", "rechazo", "desconocido"] },
-    minutos: { type: ["integer", "null"], minimum: 1, maximum: MAX_ETA },
+    // Sin minimum/maximum: la API rechaza con 400 esas restricciones numéricas en json_schema.
+    // El rango [1, MAX_ETA] lo validan Clark (FIELDS) y el chequeo de runtime de parseProviderReply.
+    minutos: { type: ["integer", "null"] },
   },
 };
 const FIELDS = [
