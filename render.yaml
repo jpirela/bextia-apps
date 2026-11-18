@@ -1,11 +1,10 @@
-# Mantenido a mano: jor-cli deploy asume rootDir api, pero el correcto es bextia-agentes
-# (los workspaces de yarn y yarn.lock viven ahí; ver K2 en ../docs/deuda-tecnica.md).
-# El static site del backoffice solo se declara aquí: se crea en Render con aprobación.
+# Mantenido a mano. La API (servicio web) y el backoffice (static site) comparten los workspaces
+# de yarn y el yarn.lock de la raíz. El esquema llega por la dependencia @bextia/api (repo bextia-api).
+# El static site se crea en Render con aprobación.
 services:
   - type: web
     name: bextia-agentes-api
     runtime: node
-    rootDir: bextia-agentes
     plan: starter
     region: frankfurt
     buildCommand: yarn install --frozen-lockfile
@@ -76,7 +75,6 @@ services:
   - type: web
     runtime: static
     name: bextia-backoffice
-    rootDir: bextia-agentes
     buildCommand: yarn install --frozen-lockfile && yarn workspace @bextia/backoffice build
     staticPublishPath: apps/backoffice/dist
     routes:

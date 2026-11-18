@@ -6,7 +6,7 @@ import { CASES } from "./cases.ts";
 import { runCase, type EvalResult } from "./score.ts";
 
 const TODAY = "2026-11-07";
-const OUT = new URL("../../../../../.tmp/eval.json", import.meta.url);
+const OUT = new URL("../../../../.tmp/eval.json", import.meta.url);
 
 if (process.env.EVAL_CONFIRM !== "si") {
   console.error("La evaluación llama a Claude y tiene costo. Exportar EVAL_CONFIRM=si tras aprobarla.");

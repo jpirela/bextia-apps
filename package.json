@@ -1,11 +1,11 @@
 {
-  "name": "bextia-root",
+  "name": "bextia-apps",
   "private": true,
-  "workspaces": ["api", "apps/*"],
+  "workspaces": ["apps/*"],
   "engines": { "node": ">=24" },
   "scripts": {
-    "test": "yarn workspace @bextia/agents test",
-    "typecheck": "yarn workspace @bextia/agents typecheck",
-    "contract": "node contract/build-contract.mjs"
+    "test": "yarn workspace @bextia/agents test && yarn workspace @bextia/backoffice test",
+    "typecheck": "yarn workspace @bextia/agents typecheck && yarn workspace @bextia/backoffice typecheck",
+    "build": "yarn workspace @bextia/backoffice build"
   }
 }

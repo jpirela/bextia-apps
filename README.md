@@ -1,7 +1,23 @@
-# Bextia agentes
+# Bextia apps
 
-Monorepo con la API de agentes (`apps/agents`, `@bextia/agents`) y el panel de operación (`apps/backoffice`, `@bextia/backoffice`). Gestor de paquetes: yarn.
+Aplicaciones de BEXTIA agentes en un monorepo de yarn:
 
+- `apps/agents` (`@bextia/agents`): API de los agentes. Agente 1 atiende leads fuera de horario y Agente 2 gestiona incidencias.
+- `apps/backoffice` (`@bextia/backoffice`): panel de operación.
+
+Las migraciones están en `apps/agents/drizzle`, la RLS y la Edge Function en `supabase/` y el despliegue en `render.yaml` (servicio web y static site).
+
+El esquema de datos vive en [bextia-api](https://github.com/jpirela/bextia-api) y llega como dependencia git fijada a un tag (`@bextia/api`, importado desde `@bextia/api/schema`). Para cambiarlo, se publica un tag nuevo en bextia-api, se sube la versión en `apps/agents/package.json` y se corre `yarn install`. La documentación (entregables 01–14 y propuesta) está en [bextia-entregables](https://github.com/jpirela/bextia-entregables).
+
+## Comandos
+
+```
+yarn install
+yarn workspace @bextia/agents dev
+yarn test
+yarn typecheck
+yarn build
+```
 ## Backoffice
 
 Panel Vite + Lara Fluent para comerciales, operadores y administradores. El acceso depende del rol del usuario.

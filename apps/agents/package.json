@@ -20,6 +20,7 @@
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^1.6.0",
+    "@bextia/api": "github:jpirela/bextia-api#v0.1.0",
     "@hono/node-server": "^2.1.6",
     "@jorgepirelarivas/clark": "^0.1.1",
     "drizzle-orm": "^0.45.4",

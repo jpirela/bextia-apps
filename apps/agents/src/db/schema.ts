@@ -1,1 +1,1 @@
-export * from "../../../../api/src/db/schema.ts";
+export * from "@bextia/api/schema";
